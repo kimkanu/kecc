@@ -6,12 +6,20 @@ use std::io::{Result, Write};
 
 use crate::write_base::*;
 
+pub trait WriteStringIndent {
+    fn write_string_indent(&self, _indent: usize) -> String;
+}
+
 impl<T: WriteLine> WriteLine for Node<T> {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         self.node.write_line(indent, write)
     }
 }
-
+impl<T: WriteStringIndent> WriteStringIndent for Node<T> {
+    fn write_string_indent(&self, indent: usize) -> String {
+        self.node.write_string_indent(indent)
+    }
+}
 impl<T: WriteString> WriteString for Node<T> {
     fn write_string(&self) -> String {
         self.node.write_string()
@@ -23,10 +31,20 @@ impl<T: WriteString> WriteString for Box<T> {
         self.deref().write_string()
     }
 }
+impl<T: WriteStringIndent> WriteStringIndent for Box<T> {
+    fn write_string_indent(&self, indent: usize) -> String {
+        self.deref().write_string_indent(indent)
+    }
+}
 
 impl<T: WriteString> WriteString for &T {
     fn write_string(&self) -> String {
         (*self).write_string()
+    }
+}
+impl<T: WriteStringIndent> WriteStringIndent for &T {
+    fn write_string_indent(&self, indent: usize) -> String {
+        (*self).write_string_indent(indent)
     }
 }
 
@@ -34,6 +52,15 @@ impl<T: WriteString> WriteString for Option<T> {
     fn write_string(&self) -> String {
         if let Some(this) = self {
             this.write_string()
+        } else {
+            "".to_string()
+        }
+    }
+}
+impl<T: WriteStringIndent> WriteStringIndent for Option<T> {
+    fn write_string_indent(&self, indent: usize) -> String {
+        if let Some(this) = self {
+            this.write_string_indent(indent)
         } else {
             "".to_string()
         }
@@ -48,9 +75,18 @@ impl<T: WriteString> WriteString for Vec<T> {
             .join(" ")
     }
 }
+impl<T: WriteStringIndent> WriteStringIndent for Vec<T> {
+    fn write_string_indent(&self, indent: usize) -> String {
+        self.iter()
+            .map(|s| s.write_string_indent(indent))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
 
 impl WriteLine for TranslationUnit {
     fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
+        println!("translation unit:\n{:?}\n", self);
         for ext_decl in &self.0 {
             ext_decl.write_line(_indent, _write)?;
             writeln!(_write)?;
@@ -72,8 +108,7 @@ impl WriteLine for ExternalDeclaration {
 impl WriteLine for Declaration {
     fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
         write_indent(_indent, _write)?;
-        writeln!(_write, "{}", self.write_string())?;
-        // println!("{}", self.write_string());
+        writeln!(_write, "{}", self.write_string_indent(_indent))?;
         Ok(())
     }
 }
@@ -81,24 +116,23 @@ impl WriteLine for Declaration {
 impl WriteLine for FunctionDefinition {
     fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
         write_indent(_indent, _write)?;
-        writeln!(_write, "{}", self.write_string())?;
-        // println!("{}", self.write_string());
+        write!(_write, "{}", self.write_string_indent(_indent))?;
         Ok(())
     }
 }
 
-impl WriteString for FunctionDefinition {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for FunctionDefinition {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "{} {} {} {}",
-            self.specifiers.write_string(),
-            self.declarator.write_string(),
+            "{} {}{} {}",
+            self.specifiers.write_string_indent(_indent),
+            self.declarator.write_string_indent(_indent),
             self.declarations
                 .iter()
-                .map(WriteString::write_string)
+                .map(|s| s.write_string_indent(_indent))
                 .collect::<Vec<_>>()
                 .join(", "),
-            self.statement.write_string(),
+            self.statement.write_string_indent(_indent),
         )
     }
 }
@@ -109,25 +143,25 @@ impl WriteString for Identifier {
     }
 }
 
-impl WriteString for Declaration {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Declaration {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "{} {};",
-            self.specifiers.write_string(),
+            self.specifiers.write_string_indent(_indent),
             self.declarators
                 .iter()
-                .map(WriteString::write_string)
+                .map(|s| s.write_string_indent(_indent))
                 .collect::<Vec<_>>()
                 .join(", "),
         )
     }
 }
 
-impl WriteString for DeclarationSpecifier {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for DeclarationSpecifier {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::StorageClass(storage_class_specifier) => storage_class_specifier.write_string(),
-            Self::TypeSpecifier(type_specifier) => type_specifier.write_string(),
+            Self::TypeSpecifier(type_specifier) => type_specifier.write_string_indent(_indent),
             Self::TypeQualifier(type_qualifier) => type_qualifier.write_string(),
             Self::Function(_) => panic!("DeclarationSpecifier::Function"),
             Self::Alignment(_) => panic!("DeclarationSpecifier::Alignment"),
@@ -145,8 +179,8 @@ impl WriteString for StorageClassSpecifier {
     }
 }
 
-impl WriteString for TypeSpecifier {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for TypeSpecifier {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Void => "void".to_string(),
             Self::Char => "char".to_string(),
@@ -160,7 +194,7 @@ impl WriteString for TypeSpecifier {
             Self::Bool => "_Bool".to_string(),
             Self::Complex => panic!("TypeSpecifier::Complex"),
             Self::Atomic(_) => panic!("TypeSpecifier::Atomic"),
-            Self::Struct(struct_type) => struct_type.write_string(),
+            Self::Struct(struct_type) => struct_type.write_string_indent(_indent),
             Self::Enum(_) => panic!("TypeSpecifier::Enum"),
             Self::TypedefName(typedef_name) => typedef_name.write_string(),
             Self::TypeOf(_) => panic!("TypeSpecifier::TypeOf"),
@@ -169,14 +203,14 @@ impl WriteString for TypeSpecifier {
     }
 }
 
-impl WriteString for StructType {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for StructType {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match &self.declarations {
             Some(declarations) => format!(
                 "{} {} {{ {} }}",
                 self.kind.write_string(),
                 self.identifier.write_string(),
-                declarations.write_string(),
+                declarations.write_string_indent(_indent),
             ),
             None => format!(
                 "{} {}",
@@ -187,29 +221,29 @@ impl WriteString for StructType {
     }
 }
 
-impl WriteString for StructDeclaration {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for StructDeclaration {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::Field(field) => field.write_string(),
+            Self::Field(field) => field.write_string_indent(_indent),
             Self::StaticAssert(_) => panic!("StructDeclaration::StaticAssert"),
         }
     }
 }
 
-impl WriteString for StructField {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for StructField {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "{} {};",
-            self.specifiers.write_string(),
-            self.declarators.write_string(),
+            self.specifiers.write_string_indent(_indent),
+            self.declarators.write_string_indent(_indent),
         )
     }
 }
 
-impl WriteString for StructDeclarator {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for StructDeclarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         assert_eq!(true, self.bit_width.is_none());
-        self.declarator.write_string()
+        self.declarator.write_string_indent(_indent)
     }
 }
 
@@ -222,39 +256,39 @@ impl WriteString for StructKind {
     }
 }
 
-impl WriteString for AlignmentSpecifier {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for AlignmentSpecifier {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::Type(typename) => format!("_Alignas ( {} )", typename.write_string(),),
+            Self::Type(typename) => format!("_Alignas({})", typename.write_string_indent(_indent)),
             Self::Constant(_) => panic!(AlignmentSpecifier::Constant),
         }
     }
 }
 
-impl WriteString for InitDeclarator {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for InitDeclarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match &self.initializer {
             Some(initializer) => format!(
                 "{} = {}",
-                self.declarator.write_string(),
-                initializer.write_string(),
+                self.declarator.write_string_indent(_indent),
+                initializer.write_string_indent(_indent),
             ),
-            None => self.declarator.write_string(),
+            None => self.declarator.write_string_indent(_indent),
         }
     }
 }
 
-impl WriteString for Initializer {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Initializer {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::Expression(expr) => expr.write_string(),
+            Self::Expression(expr) => expr.write_string_indent(_indent),
             Self::List(_) => panic!("Initializer::List"),
         }
     }
 }
 
-impl WriteString for Declarator {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Declarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         assert_eq!(true, self.extensions.is_empty());
 
         let pointers = self
@@ -280,24 +314,22 @@ impl WriteString for Declarator {
             })
             .collect::<Vec<_>>();
 
-        // 아닌거같다
         format!(
-            "{}{}{}{}{}",
-            pointers.write_string(),
-            if pointers.is_empty() { " " } else { "" },
-            self.kind.write_string(),
-            if nonpointers.is_empty() { " " } else { "" },
-            nonpointers.write_string(),
+            "{}{}{}{}",
+            pointers.write_string_indent(_indent),
+            if pointers.is_empty() { "" } else { " " },
+            self.kind.write_string_indent(_indent),
+            nonpointers.write_string_indent(_indent),
         )
     }
 }
 
-impl WriteString for DerivedDeclarator {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for DerivedDeclarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Pointer(pointer_qualifiers) => format!("* {}", pointer_qualifiers.write_string()),
-            Self::Array(array_decl) => array_decl.write_string(),
-            Self::Function(func_decl) => func_decl.write_string(),
+            Self::Array(array_decl) => array_decl.write_string_indent(_indent),
+            Self::Function(func_decl) => func_decl.write_string_indent(_indent),
             // Support when K&R function has no parameter
             Self::KRFunction(kr_func_decl) => {
                 assert_eq!(true, kr_func_decl.is_empty());
@@ -316,12 +348,13 @@ impl WriteString for PointerQualifier {
     }
 }
 
-impl WriteString for ArrayDeclarator {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ArrayDeclarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "[{} {}]",
+            "[{}{}{}]",
             self.qualifiers.write_string(),
-            self.size.write_string(),
+            if self.qualifiers.is_empty() { "" } else { " " },
+            self.size.write_string_indent(_indent),
         )
     }
 }
@@ -335,177 +368,197 @@ impl WriteString for TypeQualifier {
     }
 }
 
-impl WriteString for ArraySize {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ArraySize {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::VariableExpression(expr) => expr.write_string(),
+            Self::VariableExpression(expr) => expr.write_string_indent(_indent),
             _ => panic!("ArraySize::_"),
         }
     }
 }
 
-impl WriteString for FunctionDeclarator {
-    fn write_string(&self) -> String {
-        // self.parameters.assert_supported();
+impl WriteStringIndent for FunctionDeclarator {
+    fn write_string_indent(&self, _indent: usize) -> String {
         assert_eq!(self.ellipsis, Ellipsis::None);
         format!(
             "({})",
             self.parameters
                 .iter()
-                .map(WriteString::write_string)
+                .map(|s| s.write_string_indent(_indent))
                 .collect::<Vec<_>>()
                 .join(", "),
         )
     }
 }
 
-impl WriteString for ParameterDeclaration {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ParameterDeclaration {
+    fn write_string_indent(&self, _indent: usize) -> String {
         assert_eq!(true, self.extensions.is_empty());
         format!(
             "{} {}",
-            self.specifiers.write_string(),
-            self.declarator.write_string(),
+            self.specifiers.write_string_indent(_indent),
+            self.declarator.write_string_indent(_indent),
         )
     }
 }
 
-impl WriteString for DeclaratorKind {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for DeclaratorKind {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Abstract => "".to_string(),
             Self::Identifier(identifier) => identifier.write_string(),
-            Self::Declarator(decl) => format!("( {} )", decl.write_string(),),
+            Self::Declarator(decl) => format!("({})", decl.write_string_indent(_indent),),
         }
     }
 }
 
-impl WriteString for BlockItem {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for BlockItem {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::Declaration(decl) => decl.write_string(),
+            Self::Declaration(decl) => decl.write_string_indent(_indent),
             Self::StaticAssert(_) => panic!("BlockItem::StaticAssert"),
-            Self::Statement(stmt) => stmt.write_string(),
+            Self::Statement(stmt) => stmt.write_string_indent(_indent),
         }
     }
 }
 
-impl WriteString for ForInitializer {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ForInitializer {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Empty => ";".to_string(),
-            Self::Expression(expr) => format!("{};", expr.write_string(),),
-            Self::Declaration(decl) => decl.write_string(),
+            Self::Expression(expr) => format!("{};", expr.write_string_indent(_indent)),
+            Self::Declaration(decl) => decl.write_string_indent(_indent),
             Self::StaticAssert(_) => panic!("ForInitializer::StaticAssert"),
         }
     }
 }
 
-impl WriteString for Statement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Statement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Labeled(labeled_statement) => format!(
                 "{}: {}",
-                labeled_statement.node.label.write_string(),
-                labeled_statement.node.statement.write_string(),
+                labeled_statement.node.label.write_string_indent(_indent),
+                labeled_statement
+                    .node
+                    .statement
+                    .write_string_indent(_indent),
             ),
-            Self::Compound(items) => format!("{{ {} }}", items.write_string()),
-            Self::Expression(expr) => format!("{};", expr.write_string()),
-            Self::If(stmt) => stmt.write_string(),
-            Self::Switch(stmt) => stmt.write_string(),
-            Self::While(stmt) => stmt.write_string(),
-            Self::DoWhile(stmt) => stmt.write_string(),
-            Self::For(stmt) => stmt.write_string(),
+            Self::Compound(items) => format!(
+                "{{\n{}\n{}}}",
+                items
+                    .iter()
+                    .map(|item| format!(
+                        "{}{}",
+                        "  ".repeat(_indent + 1),
+                        item.write_string_indent(_indent + 1)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "  ".repeat(_indent),
+            ),
+            Self::Expression(expr) => format!("{};", expr.write_string_indent(_indent)),
+            Self::If(stmt) => stmt.write_string_indent(_indent),
+            Self::Switch(stmt) => stmt.write_string_indent(_indent),
+            Self::While(stmt) => stmt.write_string_indent(_indent),
+            Self::DoWhile(stmt) => stmt.write_string_indent(_indent),
+            Self::For(stmt) => stmt.write_string_indent(_indent),
             Self::Goto(_) => panic!("Statement::Goto"),
             Self::Continue => "continue;".to_string(),
             Self::Break => "break;".to_string(),
-            Self::Return(expr) => format!("return {};", expr.write_string()),
+            Self::Return(expr) => format!("return {};", expr.write_string_indent(_indent)),
             Self::Asm(_) => panic!("Statement::Asm"),
         }
     }
 }
 
-impl WriteString for IfStatement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for IfStatement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match &self.else_statement {
             Some(else_statement) => format!(
-                "if ( {} ) {} else {}",
-                self.condition.write_string(),
-                self.then_statement.write_string(),
-                else_statement.write_string(),
+                "if ({}) {} else {}{}",
+                self.condition.write_string_indent(_indent),
+                self.then_statement.write_string_indent(_indent),
+                else_statement.write_string_indent(_indent),
+                "  ".repeat(_indent),
             ),
             None => format!(
-                "if ( {} ) {}",
-                self.condition.write_string(),
-                self.then_statement.write_string(),
+                "if ({}) {}{}",
+                self.condition.write_string_indent(_indent),
+                self.then_statement.write_string_indent(_indent),
+                "  ".repeat(_indent),
             ),
         }
     }
 }
 
-impl WriteString for WhileStatement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for WhileStatement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "while ( {} ) {}",
-            self.expression.write_string(),
-            self.statement.write_string(),
+            "while ({}) {}{}",
+            self.expression.write_string_indent(_indent),
+            self.statement.write_string_indent(_indent),
+            "  ".repeat(_indent),
         )
     }
 }
 
-impl WriteString for DoWhileStatement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for DoWhileStatement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "do {} while ( {} );",
-            self.statement.write_string(),
-            self.expression.write_string(),
+            "do {} while ({});{}",
+            self.statement.write_string_indent(_indent),
+            self.expression.write_string_indent(_indent),
+            "  ".repeat(_indent),
         )
     }
 }
 
-impl WriteString for ForStatement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ForStatement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "for ( {} {}; {} ) {}",
-            self.initializer.write_string(),
-            self.condition.write_string(),
-            self.step.write_string(),
-            self.statement.write_string(),
+            "for ({} {}; {}) {}{}",
+            self.initializer.write_string_indent(_indent),
+            self.condition.write_string_indent(_indent),
+            self.step.write_string_indent(_indent),
+            self.statement.write_string_indent(_indent),
+            "  ".repeat(_indent),
         )
     }
 }
 
-impl WriteString for SwitchStatement {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for SwitchStatement {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
-            "switch ({}) {}",
-            self.expression.write_string(),
-            self.statement.write_string(),
+            "switch ({}) {}{}",
+            self.expression.write_string_indent(_indent),
+            self.statement.write_string_indent(_indent),
+            "  ".repeat(_indent),
         )
     }
 }
 
-impl WriteString for Expression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Expression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Identifier(identifier) => identifier.write_string(),
             Self::Constant(constant) => constant.write_string(),
             Self::StringLiteral(_) => panic!("Expression::StringLiteral"),
             Self::GenericSelection(_) => panic!("Expression::GenericSelection"),
-            Self::Member(member) => member.write_string(),
-            Self::Call(call) => call.write_string(),
+            Self::Member(member) => member.write_string_indent(_indent),
+            Self::Call(call) => call.write_string_indent(_indent),
             Self::CompoundLiteral(_) => panic!("Expression::CompoundLiteral"),
-            Self::SizeOf(typename) => format!("sizeof({})", typename.write_string()),
-            Self::AlignOf(typename) => format!("_Alignof({})", typename.write_string()),
-            Self::UnaryOperator(unary) => unary.write_string(),
-            Self::Cast(cast) => cast.write_string(),
-            Self::BinaryOperator(binary) => binary.write_string(),
-            Self::Conditional(conditional) => conditional.write_string(),
+            Self::SizeOf(typename) => format!("sizeof({})", typename.write_string_indent(_indent)),
+            Self::AlignOf(typename) => format!("_Alignof({})", typename.write_string_indent(_indent)),
+            Self::UnaryOperator(unary) => unary.write_string_indent(_indent),
+            Self::Cast(cast) => cast.write_string_indent(_indent),
+            Self::BinaryOperator(binary) => binary.write_string_indent(_indent),
+            Self::Conditional(conditional) => conditional.write_string_indent(_indent),
             Self::Comma(exprs) => format!(
                 "({})",
                 exprs
                     .iter()
-                    .map(WriteString::write_string)
+                    .map(|s| s.write_string_indent(_indent))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -516,21 +569,21 @@ impl WriteString for Expression {
     }
 }
 
-impl WriteString for Label {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for Label {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Identifier(_) => panic!("Label::Identifier"),
-            Self::Case(expr) => format!("case {}", expr.write_string()),
+            Self::Case(expr) => format!("case {}", expr.write_string_indent(_indent)),
             Self::Default => "default".to_string(),
         }
     }
 }
 
-impl WriteString for MemberExpression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for MemberExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "({}{}{})",
-            self.expression.write_string(),
+            self.expression.write_string_indent(_indent),
             match self.operator.node {
                 MemberOperator::Direct => ".",
                 MemberOperator::Indirect => "->",
@@ -540,78 +593,95 @@ impl WriteString for MemberExpression {
     }
 }
 
-impl WriteString for CallExpression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for CallExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "{}({})",
-            self.callee.write_string(),
+            self.callee.write_string_indent(_indent),
             self.arguments
                 .iter()
-                .map(WriteString::write_string)
+                .map(|s| s.write_string_indent(_indent))
                 .collect::<Vec<_>>()
                 .join(", "),
         )
     }
 }
 
-impl WriteString for TypeName {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for TypeName {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "{} {}",
-            self.specifiers.write_string(),
-            self.declarator.write_string(),
+            self.specifiers.write_string_indent(_indent),
+            self.declarator.write_string_indent(_indent),
         )
     }
 }
 
-impl WriteString for SpecifierQualifier {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for SpecifierQualifier {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::TypeSpecifier(type_specifier) => type_specifier.write_string(),
+            Self::TypeSpecifier(type_specifier) => type_specifier.write_string_indent(_indent),
             Self::TypeQualifier(type_qualifier) => type_qualifier.write_string(),
         }
     }
 }
 
-impl WriteString for UnaryOperatorExpression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for UnaryOperatorExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self.operator.node {
-            UnaryOperator::PostIncrement => format!("({}++)", self.operand.write_string()),
-            UnaryOperator::PostDecrement => format!("({}--)", self.operand.write_string()),
-            UnaryOperator::PreIncrement => format!("(++{})", self.operand.write_string()),
-            UnaryOperator::PreDecrement => format!("(--{})", self.operand.write_string()),
-            UnaryOperator::Address => format!("(&{})", self.operand.write_string()),
-            UnaryOperator::Indirection => format!("(*{})", self.operand.write_string()),
-            UnaryOperator::Plus => format!("(+{})", self.operand.write_string()),
-            UnaryOperator::Minus => format!("(-{})", self.operand.write_string()),
-            UnaryOperator::Complement => format!("(~{})", self.operand.write_string()),
-            UnaryOperator::Negate => format!("(!{})", self.operand.write_string()),
-            UnaryOperator::SizeOf => format!("(sizeof {})", self.operand.write_string()),
+            UnaryOperator::PostIncrement | UnaryOperator::PostDecrement => format!(
+                "({}{})",
+                self.operand.write_string_indent(_indent),
+                self.operator.write_string(),
+            ),
+            _ => format!(
+                "({}{})",
+                self.operator.write_string(),
+                self.operand.write_string_indent(_indent),
+            ),
         }
     }
 }
 
-impl WriteString for CastExpression {
+impl WriteString for UnaryOperator {
     fn write_string(&self) -> String {
+        match self {
+            Self::PostIncrement | Self::PreIncrement => "++".to_string(),
+            Self::PostDecrement | Self::PreDecrement => "--".to_string(),
+            Self::Address => "&".to_string(),
+            Self::Indirection => "*".to_string(),
+            Self::Plus => "+".to_string(),
+            Self::Minus => "-".to_string(),
+            Self::Complement => "~".to_string(),
+            Self::Negate => "!".to_string(),
+            Self::SizeOf => "sizeof ".to_string(),
+        }
+    }
+}
+
+impl WriteStringIndent for CastExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "({}) {}",
-            self.type_name.write_string(),
-            self.expression.write_string(),
+            self.type_name.write_string_indent(_indent),
+            self.expression.write_string_indent(_indent),
         )
     }
 }
 
-impl WriteString for BinaryOperatorExpression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for BinaryOperatorExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         match self.operator.node {
-            BinaryOperator::Index => {
-                format!("{}[{}]", self.lhs.write_string(), self.rhs.write_string())
-            }
+            BinaryOperator::Index => format!(
+                "{}[{}]",
+                self.lhs.write_string_indent(_indent),
+                self.rhs.write_string_indent(_indent),
+            ),
             _ => format!(
                 "({} {} {})",
-                self.lhs.write_string(),
+                self.lhs.write_string_indent(_indent),
                 self.operator.write_string(),
-                self.rhs.write_string()
+                self.rhs.write_string_indent(_indent),
             ),
         }
     }
@@ -724,13 +794,13 @@ impl WriteString for BinaryOperator {
     }
 }
 
-impl WriteString for ConditionalExpression {
-    fn write_string(&self) -> String {
+impl WriteStringIndent for ConditionalExpression {
+    fn write_string_indent(&self, _indent: usize) -> String {
         format!(
             "({} ? {} : {})",
-            self.condition.write_string(),
-            self.then_expression.write_string(),
-            self.else_expression.write_string(),
+            self.condition.write_string_indent(_indent),
+            self.then_expression.write_string_indent(_indent),
+            self.else_expression.write_string_indent(_indent),
         )
     }
 }
