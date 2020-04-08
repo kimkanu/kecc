@@ -86,7 +86,6 @@ impl<T: WriteStringIndent> WriteStringIndent for Vec<T> {
 
 impl WriteLine for TranslationUnit {
     fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        println!("translation unit:\n{:?}\n", self);
         for ext_decl in &self.0 {
             ext_decl.write_line(_indent, _write)?;
             writeln!(_write)?;

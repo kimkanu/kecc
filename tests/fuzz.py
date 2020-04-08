@@ -36,6 +36,8 @@ REPLACE_DICT = {
     "\"g_\w*\", ": "",              # transparent_crc에서 프린트 목적으로 받은 StringLiteral 삭제
     "char\* vname, ": "",           # transparent_crc에서 사용하지 않는 파라미터 삭제
     r"[^\n]*_IO_2_1_[^;]*;": "",    # extern을 지우면서 생긴 size를 알 수 없는 struct 삭제
+    r"__asm\s*\([^\)]*\)": "",      # asm extension in mac
+    r"__asm__\s*\([^\)]*\)": "",    # asm extension in linux
 }
 CSMITH_DIR = "csmith-2.3.0"
 
