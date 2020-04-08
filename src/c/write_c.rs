@@ -733,7 +733,7 @@ impl WriteString for Float {
             "{}{}{}",
             match self.base {
                 FloatBase::Decimal => "",
-                FloatBase::Hexadecimal => "\\x",
+                FloatBase::Hexadecimal => "0x",
             },
             self.number.to_string(),
             self.suffix.write_string(),
