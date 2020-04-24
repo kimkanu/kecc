@@ -28,13 +28,14 @@ cargo run --release -- examples/fibonacci.c  # compile with release build
 ## Test
 
 ```
-cargo test             # debug build test
-cargo test --release   # release build test
+RUST_MIN_STACK=8388608 cargo test             # debug build test
+RUST_MIN_STACK=8388608 cargo test --release   # release build test
 
-cargo test <test-name> # run a particular test
+RUST_MIN_STACK=8388608 cargo test <test-name> # run a particular test
 ```
 
-`<test-name>` can be `test_examples_write_c`, `test_examples_irgen`, ...
+`RUST_MIN_STACK=8388608` is necessary for deep call stack for irgen tests. `<test-name>` can be
+`test_examples_write_c`, `test_examples_irgen`, ...
 
 
 ## Fuzzing
@@ -78,7 +79,7 @@ built by the test script. For more information, we refer to the
 ### Reduce
 
 When the fuzzer finds a buggy input program for your compiler, it is highly likely that the input
-program is too big to manually inspect.  We use `creduce` that reduces the buggy input program as
+program is too big to manually inspect. We use `creduce` that reduces the buggy input program as
 much as possible.
 
 Suppose `tests/test_polished.c` is the buggy input program. Then the following script reduces the
@@ -96,3 +97,6 @@ The script performs unguided test-case reduction using `creduce`: given a buggy 
 reduces the program; check if the reduced program still fails on the test, and if so, replaces the
 given program with the reduced one; repeat until you get a small enough buggy program. For more
 information, we refer to the [Creduce](https://embed.cs.utah.edu/creduce/) homepage.
+
+**[NOTICE]** The fuzzer supports Ubuntu 18.04 only. It may work for other platforms, but if it
+doesn't, please run the fuzzer in Ubuntu 18.04.

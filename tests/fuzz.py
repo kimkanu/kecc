@@ -21,9 +21,11 @@ REPLACE_DICT = {
     "extern ": "",
     "__restrict": "",
     "long __undefined;": "",
-    "return 0;": "return crc32_context % 128;",
+    "return 0;": "return (unsigned char)(crc32_context);",
     r"__attribute__\s*\(\(.*\)\)": "",
-    "_Float128": "long double",
+    "_Float128": "double",
+    "long double": "double",
+    "(\+[0-9^FL]*)L": r"\1",
     "union": "struct",
     r"enum[\w\s]*\{[^\}]*\};": "",
     r"typedef enum[\w\s]*\{[^;]*;[\s_A-Z]*;": "",
@@ -38,6 +40,12 @@ REPLACE_DICT = {
     r"[^\n]*_IO_2_1_[^;]*;": "",    # extern을 지우면서 생긴 size를 알 수 없는 struct 삭제
     r"__asm\s*\([^\)]*\)": "",      # asm extension in mac
     r"__asm__\s*\([^\)]*\)": "",    # asm extension in linux
+    "typedef __builtin_va_list __gnuc_va_list;": "",
+    "typedef __gnuc_va_list va_list;": "",
+    
+    # todo: need to consider the case below in the future:
+    # avoid compile-time constant expressed as complex expression such as `1 + 1`
+    "char _unused2[^;]*;": "char _unused2[10];", 
 }
 CSMITH_DIR = "csmith-2.3.0"
 
@@ -214,7 +222,7 @@ def fuzz(tests_dir, fuzz_arg, num_iter):
             try:
                 args = ["cargo", "run", "--release", "--bin", "fuzz", "--", fuzz_arg, os.path.join(tests_dir, "test_polished.c")]
                 proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=tests_dir)
-                proc.communicate(timeout=10)
+                proc.communicate(timeout=60)
                 if proc.returncode != 0:
                     raise Exception("Test `{}` failed with exit code {}.".format(" ".join(args), proc.returncode))
             except subprocess.TimeoutExpired as e:

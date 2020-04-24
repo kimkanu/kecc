@@ -9,18 +9,24 @@ use itertools::izip;
 use crate::ir::*;
 use crate::*;
 
-// TODO: the variants of Value will be added in the future
+// TODO: delete `allow(dead_code)`
+/// Even though `Undef`, `Int`, `Float` are constructed and actively used at run-time,
+/// the rust compiler analyzes these elements are dead code.
+/// For this reason, we add `allow(dead_code)` mark above these elements respectively.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value {
+    #[allow(dead_code)]
     Undef {
         dtype: Dtype,
     },
     Unit,
+    #[allow(dead_code)]
     Int {
         value: u128,
         width: usize,
         is_signed: bool,
     },
+    #[allow(dead_code)]
     Float {
         /// `value` may be `f32`, but it is possible to consider it as `f64`.
         ///
@@ -39,6 +45,37 @@ pub enum Value {
         inner_dtype: Dtype,
         values: Vec<Value>,
     },
+    Struct {
+        name: String,
+        fields: Vec<Named<Value>>,
+    },
+}
+
+impl TryFrom<Constant> for Value {
+    type Error = ();
+
+    fn try_from(constant: Constant) -> Result<Self, Self::Error> {
+        let value = match constant {
+            Constant::Undef { dtype } => Self::Undef { dtype },
+            Constant::Unit => Self::Unit,
+            Constant::Int {
+                value,
+                width,
+                is_signed,
+            } => Self::Int {
+                value,
+                width,
+                is_signed,
+            },
+            Constant::Float { value, width } => Self::Float {
+                value: value.into_inner(),
+                width,
+            },
+            _ => panic!(),
+        };
+
+        Ok(value)
+    }
 }
 
 impl HasDtype for Value {
@@ -55,6 +92,13 @@ impl HasDtype for Value {
                 inner_dtype,
                 values,
             } => Dtype::array(inner_dtype.clone(), values.len()),
+            Self::Struct { name, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|f| Named::new(f.name().cloned(), f.deref().dtype()))
+                    .collect();
+                Dtype::structure(Some(name.clone()), Some(fields))
+            }
         }
     }
 }
@@ -71,7 +115,7 @@ impl Value {
     }
 
     #[inline]
-    pub fn int(value: u128, width: usize, is_signed: bool) -> Self {
+    fn int(value: u128, width: usize, is_signed: bool) -> Self {
         Self::Int {
             value,
             width,
@@ -90,7 +134,20 @@ impl Value {
     }
 
     #[inline]
-    fn get_int(self) -> Option<(u128, usize, bool)> {
+    fn array(inner_dtype: Dtype, values: Vec<Self>) -> Self {
+        Self::Array {
+            inner_dtype,
+            values,
+        }
+    }
+
+    #[inline]
+    fn structure(name: String, fields: Vec<Named<Value>>) -> Self {
+        Self::Struct { name, fields }
+    }
+
+    #[inline]
+    pub fn get_int(self) -> Option<(u128, usize, bool)> {
         if let Value::Int {
             value,
             width,
@@ -122,17 +179,123 @@ impl Value {
     }
 
     #[inline]
-    fn default_from_dtype(dtype: &Dtype) -> Self {
-        match dtype {
-            ir::Dtype::Unit { .. } => Self::unit(),
-            ir::Dtype::Int {
+    fn default_from_dtype(
+        dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<Self, ()> {
+        let value = match dtype {
+            Dtype::Unit { .. } => Self::unit(),
+            Dtype::Int {
                 width, is_signed, ..
             } => Self::int(u128::default(), *width, *is_signed),
-            ir::Dtype::Float { width, .. } => Self::float(f64::default(), *width),
-            ir::Dtype::Pointer { inner, .. } => Self::nullptr(inner.deref().clone()),
-            ir::Dtype::Array { .. } => panic!("array type does not have a default value"),
-            ir::Dtype::Function { .. } => panic!("function type does not have a default value"),
-            ir::Dtype::Typedef { .. } => panic!("typedef should be replaced by real dtype"),
+            Dtype::Float { width, .. } => Self::float(f64::default(), *width),
+            Dtype::Pointer { inner, .. } => Self::nullptr(inner.deref().clone()),
+            Dtype::Array { inner, size } => {
+                let values = iter::repeat(Self::default_from_dtype(inner, structs))
+                    .take(*size)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::array(inner.deref().clone(), values)
+            }
+            Dtype::Struct { name, .. } => {
+                let name = name.as_ref().expect("struct should have its name");
+                let struct_type = structs
+                    .get(name)
+                    .expect("struct type matched with `name` must exist")
+                    .as_ref()
+                    .expect("`struct_type` must have its definition");
+                let fields = struct_type
+                    .get_struct_fields()
+                    .expect("`struct_type` must be struct type")
+                    .as_ref()
+                    .expect("`fields` must be `Some`");
+
+                let fields = fields
+                    .iter()
+                    .map(|f| {
+                        let value = Self::default_from_dtype(f.deref(), structs)?;
+                        Ok(Named::new(f.name().cloned(), value))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Self::structure(name.clone(), fields)
+            }
+            Dtype::Function { .. } => panic!("function type does not have a default value"),
+            Dtype::Typedef { .. } => panic!("typedef should be replaced by real dtype"),
+        };
+
+        Ok(value)
+    }
+
+    fn try_from_initializer(
+        initializer: &ast::Initializer,
+        dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<Self, ()> {
+        match initializer {
+            ast::Initializer::Expression(expr) => match dtype {
+                Dtype::Int { .. } | Dtype::Float { .. } | Dtype::Pointer { .. } => {
+                    let constant = Constant::try_from(&expr.node)?;
+                    let value = Self::try_from(constant)?;
+
+                    calculator::calculate_typecast(value, dtype.clone())
+                }
+                _ => Err(()),
+            },
+            ast::Initializer::List(items) => match dtype {
+                Dtype::Array { inner, size } => {
+                    let inner_dtype = inner.deref().clone();
+                    let num_of_items = items.len();
+                    let values = (0..*size)
+                        .map(|i| {
+                            if i < num_of_items {
+                                Self::try_from_initializer(
+                                    &items[i].node.initializer.node,
+                                    &inner_dtype,
+                                    structs,
+                                )
+                            } else {
+                                Self::default_from_dtype(&inner_dtype, structs)
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    Ok(Self::array(inner_dtype, values))
+                }
+                Dtype::Struct { name, .. } => {
+                    let name = name.as_ref().expect("struct should have its name");
+                    let struct_type = structs
+                        .get(name)
+                        .expect("struct type matched with `name` must exist")
+                        .as_ref()
+                        .expect("`struct_type` must have its definition");
+                    let fields = struct_type
+                        .get_struct_fields()
+                        .expect("`struct_type` must be struct type")
+                        .as_ref()
+                        .expect("`fields` must be `Some`");
+
+                    let fields = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            let value = if let Some(item) = items.get(i) {
+                                Self::try_from_initializer(
+                                    &item.node.initializer.node,
+                                    f.deref(),
+                                    structs,
+                                )?
+                            } else {
+                                Self::default_from_dtype(f.deref(), structs)?
+                            };
+
+                            Ok(Named::new(f.name().cloned(), value))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    Ok(Self::structure(name.clone(), fields))
+                }
+                _ => Err(()),
+            },
         }
     }
 }
@@ -145,6 +308,11 @@ pub enum InterpreterError {
     NoMainFunction,
     #[fail(display = "ir has no function definition of {} function", func_name)]
     NoFunctionDefinition { func_name: String },
+    #[fail(
+        display = "ir has no structure definition of {} structure",
+        struct_name
+    )]
+    NoStructureDefinition { struct_name: String },
     #[fail(display = "{}:{} / {}", func_name, pc, msg)]
     Misc {
         func_name: String,
@@ -251,6 +419,7 @@ impl<'i> StackFrame<'i> {
 
 mod calculator {
     use super::Value;
+    use crate::ir::*;
     use lang_c::ast;
 
     // TODO: change to template function in the future
@@ -278,49 +447,126 @@ mod calculator {
                 assert_eq!(lhs_w, rhs_w);
                 assert_eq!(lhs_s, rhs_s);
 
-                match op {
-                    // TODO: consider signed value in the future
-                    ast::BinaryOperator::Plus => Ok(Value::int(lhs + rhs, lhs_w, lhs_s)),
-                    ast::BinaryOperator::Minus => Ok(Value::int(lhs - rhs, lhs_w, lhs_s)),
-                    ast::BinaryOperator::Multiply => Ok(Value::int(lhs * rhs, lhs_w, lhs_s)),
-                    ast::BinaryOperator::Modulo => Ok(Value::int(lhs % rhs, lhs_w, lhs_s)),
+                let result = match op {
+                    // TODO: explain why plus & minus do not need to consider `is_signed'
+                    ast::BinaryOperator::Plus => (lhs as i128 + rhs as i128) as u128,
+                    ast::BinaryOperator::Minus => (lhs as i128 - rhs as i128) as u128,
+                    ast::BinaryOperator::Multiply => {
+                        if lhs_s {
+                            (lhs as i128 * rhs as i128) as u128
+                        } else {
+                            lhs * rhs
+                        }
+                    }
+                    ast::BinaryOperator::Divide => {
+                        if lhs_s {
+                            (lhs as i128 / rhs as i128) as u128
+                        } else {
+                            lhs / rhs
+                        }
+                    }
+                    ast::BinaryOperator::Modulo => {
+                        if lhs_s {
+                            (lhs as i128 % rhs as i128) as u128
+                        } else {
+                            lhs % rhs
+                        }
+                    }
+                    ast::BinaryOperator::ShiftLeft => {
+                        let rhs = if lhs_s {
+                            let rhs = rhs as i128;
+                            assert!(rhs >= 0);
+                            assert!(rhs < (lhs_w as i128));
+                            rhs as u128
+                        } else {
+                            assert!(rhs < (lhs_w as u128));
+                            rhs
+                        };
+
+                        lhs << rhs
+                    }
+                    ast::BinaryOperator::ShiftRight => {
+                        if lhs_s {
+                            // arithmetic shift right
+                            let rhs = rhs as i128;
+                            assert!(rhs >= 0);
+                            assert!(rhs < (lhs_w as i128));
+                            ((lhs as i128) >> rhs) as u128
+                        } else {
+                            // logical shift right
+                            assert!(rhs < (lhs_w as u128));
+                            let bit_mask = (1u128 << lhs_w as u128) - 1;
+                            let lhs = lhs & bit_mask;
+                            lhs >> rhs
+                        }
+                    }
+                    ast::BinaryOperator::BitwiseAnd => lhs & rhs,
+                    ast::BinaryOperator::BitwiseXor => lhs ^ rhs,
+                    ast::BinaryOperator::BitwiseOr => lhs | rhs,
                     ast::BinaryOperator::Equals => {
                         let result = if lhs == rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
+                        return Ok(Value::int(result, 1, false));
                     }
                     ast::BinaryOperator::NotEquals => {
                         let result = if lhs != rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
+                        return Ok(Value::int(result, 1, false));
                     }
                     ast::BinaryOperator::Less => {
-                        let result = if lhs < rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
+                        let condition = if lhs_s {
+                            (lhs as i128) < (rhs as i128)
+                        } else {
+                            lhs < rhs
+                        };
+                        let result = if condition { 1 } else { 0 };
+                        return Ok(Value::int(result, 1, false));
                     }
                     ast::BinaryOperator::Greater => {
-                        let result = if lhs > rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
+                        let condition = if lhs_s {
+                            (lhs as i128) > (rhs as i128)
+                        } else {
+                            lhs > rhs
+                        };
+                        let result = if condition { 1 } else { 0 };
+                        return Ok(Value::int(result, 1, false));
                     }
                     ast::BinaryOperator::LessOrEqual => {
-                        let result = if lhs <= rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
+                        let condition = if lhs_s {
+                            (lhs as i128) <= (rhs as i128)
+                        } else {
+                            lhs <= rhs
+                        };
+                        let result = if condition { 1 } else { 0 };
+                        return Ok(Value::int(result, 1, false));
                     }
                     ast::BinaryOperator::GreaterOrEqual => {
-                        let result = if lhs >= rhs { 1 } else { 0 };
-                        Ok(Value::int(result, 1, lhs_s))
-                    }
-                    ast::BinaryOperator::LogicalAnd => {
-                        assert!(lhs < 2);
-                        assert!(rhs < 2);
-                        let result = lhs | rhs;
-                        Ok(Value::int(result, 1, lhs_s))
+                        let condition = if lhs_s {
+                            (lhs as i128) >= (rhs as i128)
+                        } else {
+                            lhs >= rhs
+                        };
+                        let result = if condition { 1 } else { 0 };
+                        return Ok(Value::int(result, 1, false));
                     }
                     _ => todo!(
                         "calculate_binary_operator_expression: not supported operator {:?}",
                         op
                     ),
-                }
+                };
+
+                let result = if lhs_s {
+                    sign_extension(result, lhs_w as u128)
+                } else {
+                    trim_unnecessary_bits(result, lhs_w as u128)
+                };
+
+                Ok(Value::int(result, lhs_w, lhs_s))
             }
-            _ => todo!(),
+            (op, lhs, rhs) => todo!(
+                "calculate_binary_operator_expression: not supported case for {:?} {:?} {:?}",
+                op,
+                lhs,
+                rhs
+            ),
         }
     }
 
@@ -346,8 +592,14 @@ mod calculator {
                     is_signed,
                 },
             ) => {
-                assert!(is_signed);
-                let result = -(value as i128);
+                // TODO: check what is exact behavior of appling minus to unsigned value
+                let result = if is_signed {
+                    (-(value as i128)) as u128
+                } else {
+                    let result = (-(value as i128)) as u128;
+                    let bit_mask = (1u128 << (width as u128)) - 1;
+                    result & bit_mask
+                };
                 Ok(Value::int(result as u128, width, is_signed))
             }
             (
@@ -363,26 +615,94 @@ mod calculator {
                 let result = if value == 0 { 1 } else { 0 };
                 Ok(Value::int(result, width, is_signed))
             }
-            _ => todo!(),
+            (op, operand) => todo!(
+                "calculate_unary_operator_expression: not supported case for {:?} {:?}",
+                op,
+                operand,
+            ),
         }
     }
 
-    pub fn calculate_typecast(value: Value, dtype: crate::ir::Dtype) -> Result<Value, ()> {
+    pub fn calculate_typecast(value: Value, dtype: Dtype) -> Result<Value, ()> {
+        if value.dtype() == dtype {
+            return Ok(value);
+        }
+
         match (value, dtype) {
             (Value::Undef { .. }, _) => Err(()),
             // TODO: distinguish zero/signed extension in the future
             // TODO: consider truncate in the future
             (
-                Value::Int { value, .. },
-                crate::ir::Dtype::Int {
+                Value::Int { value, width, .. },
+                Dtype::Int {
+                    width: target_width,
+                    is_signed: target_signed,
+                    ..
+                },
+            ) => {
+                // Other cases
+                let result = if target_signed {
+                    if width >= target_width {
+                        // TODO: explain the logic in the future
+                        let value = trim_unnecessary_bits(value, target_width as u128);
+                        sign_extension(value, target_width as u128)
+                    } else {
+                        value
+                    }
+                } else {
+                    trim_unnecessary_bits(value, target_width as u128)
+                };
+
+                Ok(Value::int(result, target_width, target_signed))
+            }
+            (
+                Value::Int {
+                    value, is_signed, ..
+                },
+                Dtype::Float { width, .. },
+            ) => {
+                let casted_value = if is_signed {
+                    value as i128 as f64
+                } else {
+                    value as f64
+                };
+                Ok(Value::float(casted_value, width))
+            }
+            (
+                Value::Float { value, .. },
+                Dtype::Int {
                     width, is_signed, ..
                 },
-            ) => Ok(Value::int(value, width, is_signed)),
-            (Value::Float { value, .. }, crate::ir::Dtype::Float { width, .. }) => {
+            ) => {
+                let casted_value = if is_signed {
+                    value as i128 as u128
+                } else {
+                    value as u128
+                };
+                Ok(Value::int(casted_value, width, is_signed))
+            }
+            (Value::Float { value, .. }, Dtype::Float { width, .. }) => {
                 Ok(Value::float(value, width))
             }
-            (value, dtype) => todo!("calculate_typecast ({:?}) {:?}", dtype, value),
+            (value, dtype) => todo!("calculate_typecast ({:?}) {:?}", value, dtype),
         }
+    }
+
+    #[inline]
+    fn sign_extension(value: u128, width: u128) -> u128 {
+        let base = 1u128 << (width - 1);
+        if value >= base {
+            let bit_mask = -1i128 << (width as i128);
+            value | bit_mask as u128
+        } else {
+            value
+        }
+    }
+
+    #[inline]
+    fn trim_unnecessary_bits(value: u128, width: u128) -> u128 {
+        let bit_mask = (1u128 << width) - 1;
+        value & bit_mask
     }
 }
 
@@ -393,7 +713,7 @@ enum Byte {
     Undef,
     Concrete(u8),
     Pointer {
-        bid: usize,
+        bid: Option<usize>,
         offset: isize,
         index: usize,
     },
@@ -411,7 +731,7 @@ impl Byte {
     }
 
     #[inline]
-    fn pointer(bid: usize, offset: isize, index: usize) -> Self {
+    fn pointer(bid: Option<usize>, offset: isize, index: usize) -> Self {
         Self::Pointer { bid, offset, index }
     }
 
@@ -423,7 +743,7 @@ impl Byte {
         }
     }
 
-    fn get_pointer(&self) -> Option<(usize, isize, usize)> {
+    fn get_pointer(&self) -> Option<(Option<usize>, isize, usize)> {
         if let Self::Pointer { bid, offset, index } = self {
             Some((*bid, *offset, *index))
         } else {
@@ -431,8 +751,8 @@ impl Byte {
         }
     }
 
-    fn block_from_dtype(dtype: &Dtype) -> Vec<Self> {
-        let size = dtype.size_align_of().unwrap().0;
+    fn block_from_dtype(dtype: &Dtype, structs: &HashMap<String, Option<Dtype>>) -> Vec<Self> {
+        let size = dtype.size_align_of(structs).unwrap().0;
         iter::repeat(Self::Undef).take(size).collect()
     }
 
@@ -457,19 +777,24 @@ impl Byte {
         u128::from_le_bytes(array)
     }
 
-    fn bytes_to_value<'b, I>(bytes: &mut I, dtype: &Dtype) -> Result<Value, InterpreterError>
+    fn bytes_to_value<'b, I>(
+        bytes: &mut I,
+        dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<Value, InterpreterError>
     where
         I: Iterator<Item = &'b Self>,
     {
         match dtype {
-            ir::Dtype::Unit { .. } => Ok(Value::Unit),
-            ir::Dtype::Int {
+            Dtype::Unit { .. } => Ok(Value::Unit),
+            Dtype::Int {
                 width, is_signed, ..
             } => {
+                let size = dtype.size_align_of(structs).unwrap().0;
+                let bytes = bytes.by_ref().take(size).collect::<Vec<_>>();
                 let value = some_or!(
                     bytes
-                        .by_ref()
-                        .take(*width)
+                        .iter()
                         .map(|b| b.get_concrete())
                         .collect::<Option<Vec<_>>>(),
                     return Ok(Value::undef(dtype.clone()))
@@ -477,17 +802,18 @@ impl Byte {
                 let value = Self::bytes_to_u128(&value, *is_signed);
                 Ok(Value::int(value, *width, *is_signed))
             }
-            ir::Dtype::Float { width, .. } => {
+            Dtype::Float { width, .. } => {
+                let size = dtype.size_align_of(structs).unwrap().0;
+                let bytes = bytes.by_ref().take(size).collect::<Vec<_>>();
                 let value = some_or!(
                     bytes
-                        .by_ref()
-                        .take(*width)
+                        .iter()
                         .map(|b| b.get_concrete())
                         .collect::<Option<Vec<_>>>(),
                     return Ok(Value::undef(dtype.clone()))
                 );
                 let value = Self::bytes_to_u128(&value, false);
-                let value = if *width == Dtype::SIZE_OF_FLOAT {
+                let value = if size == Dtype::SIZE_OF_FLOAT {
                     f32::from_bits(value as u32) as f64
                 } else {
                     f64::from_bits(value as u64)
@@ -495,11 +821,14 @@ impl Byte {
 
                 Ok(Value::float(value, *width))
             }
-            ir::Dtype::Pointer { inner, .. } => {
+            Dtype::Pointer { inner, .. } => {
+                let bytes = bytes
+                    .by_ref()
+                    .take(Dtype::SIZE_OF_POINTER)
+                    .collect::<Vec<_>>();
                 let value = some_or!(
                     bytes
-                        .by_ref()
-                        .take(Dtype::SIZE_OF_POINTER)
+                        .iter()
                         .map(|b| b.get_pointer())
                         .collect::<Option<Vec<_>>>(),
                     return Ok(Value::undef(dtype.clone()))
@@ -515,17 +844,19 @@ impl Byte {
                     {
                         Value::undef(inner.deref().clone())
                     } else {
-                        Value::pointer(Some(*bid), *offset, inner.deref().clone())
+                        Value::pointer(*bid, *offset, inner.deref().clone())
                     },
                 )
             }
-            ir::Dtype::Array { inner, size } => {
-                let (inner_size, inner_align) = inner.size_align_of().unwrap();
+            Dtype::Array { inner, size } => {
+                let (inner_size, inner_align) = inner.size_align_of(structs).unwrap();
                 let padding = std::cmp::max(inner_size, inner_align) - inner_size;
                 let values = (0..*size)
                     .map(|_| {
-                        let value = Self::bytes_to_value(bytes, inner)?;
-                        let _ = bytes.by_ref().take(padding);
+                        let value = Self::bytes_to_value(bytes, inner, structs)?;
+                        if padding > 0 {
+                            let _ = bytes.by_ref().nth(padding - 1);
+                        }
                         Ok(value)
                     })
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
@@ -534,62 +865,126 @@ impl Byte {
                     values,
                 })
             }
-            ir::Dtype::Function { .. } => panic!("function value cannot be constructed from bytes"),
-            ir::Dtype::Typedef { .. } => panic!("typedef should be replaced by real dtype"),
+            Dtype::Struct { name, .. } => {
+                let name = name.as_ref().expect("struct should have its name");
+                let struct_type = structs
+                    .get(name)
+                    .expect("struct type matched with `name` must exist")
+                    .as_ref()
+                    .expect("`struct_type` must have its definition");
+                let fields = struct_type
+                    .get_struct_fields()
+                    .expect("`struct_type` must be struct type")
+                    .as_ref()
+                    .expect("`fields` must be `Some`");
+                let (size, _, offsets) = struct_type
+                    .get_struct_size_align_offsets()
+                    .expect("`struct_type` must be struct type")
+                    .as_ref()
+                    .expect("`offsets` must be `Some`");
+                let bytes = bytes.by_ref().take(*size).cloned().collect::<Vec<_>>();
+
+                assert_eq!(fields.len(), offsets.len());
+                let fields = izip!(fields, offsets)
+                    .map(|(f, o)| {
+                        let mut sub_bytes = bytes[*o..].iter();
+                        let value = Self::bytes_to_value(&mut sub_bytes, f.deref(), structs)?;
+                        Ok(Named::new(f.name().cloned(), value))
+                    })
+                    .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+                Ok(Value::Struct {
+                    name: name.clone(),
+                    fields,
+                })
+            }
+            Dtype::Function { .. } => panic!("function value cannot be constructed from bytes"),
+            Dtype::Typedef { .. } => panic!("typedef should be replaced by real dtype"),
         }
     }
 
-    fn value_to_bytes(value: &Value) -> Vec<Self> {
+    fn value_to_bytes(value: &Value, structs: &HashMap<String, Option<Dtype>>) -> Vec<Self> {
         match value {
-            Value::Undef { dtype } => Self::block_from_dtype(dtype),
+            Value::Undef { dtype } => Self::block_from_dtype(dtype, structs),
             Value::Unit => Vec::new(),
-            Value::Int { value, width, .. } => {
-                let size = (*width + Dtype::BITS_OF_BYTE - 1) / Dtype::BITS_OF_BYTE;
-                Self::u128_to_bytes(*value, size)
+            Value::Int {
+                value: int_value, ..
+            } => {
+                let size = value.dtype().size_align_of(structs).unwrap().0;
+                Self::u128_to_bytes(*int_value, size)
                     .iter()
                     .map(|b| Self::concrete(*b))
                     .collect::<Vec<_>>()
             }
-            Value::Float { value, width } => {
-                let size = (*width + Dtype::BITS_OF_BYTE - 1) / Dtype::BITS_OF_BYTE;
-                let value: u128 = match size {
-                    Dtype::SIZE_OF_FLOAT => (*value as f32).to_bits() as u128,
-                    Dtype::SIZE_OF_DOUBLE => (*value as f64).to_bits() as u128,
+            Value::Float {
+                value: float_value, ..
+            } => {
+                let size = value.dtype().size_align_of(structs).unwrap().0;
+                let value_bits: u128 = match size {
+                    Dtype::SIZE_OF_FLOAT => (*float_value as f32).to_bits() as u128,
+                    Dtype::SIZE_OF_DOUBLE => (*float_value as f64).to_bits() as u128,
                     _ => panic!("value_to_bytes: {} is not a valid float size", size),
                 };
 
-                Self::u128_to_bytes(value, size)
+                Self::u128_to_bytes(value_bits, size)
                     .iter()
                     .map(|b| Self::concrete(*b))
                     .collect::<Vec<_>>()
             }
             Value::Pointer { bid, offset, .. } => (0..Dtype::SIZE_OF_POINTER)
-                .map(|i| Self::pointer(bid.unwrap(), *offset, i))
+                .map(|i| Self::pointer(*bid, *offset, i))
                 .collect(),
             Value::Array {
                 inner_dtype,
                 values,
             } => {
-                let (inner_size, inner_align) = inner_dtype.size_align_of().unwrap();
+                let (inner_size, inner_align) = inner_dtype.size_align_of(structs).unwrap();
                 let padding = std::cmp::max(inner_size, inner_align) - inner_size;
                 values
                     .iter()
                     .map(|v| {
-                        let mut result = Self::value_to_bytes(v);
+                        let mut result = Self::value_to_bytes(v, structs);
                         result.extend(iter::repeat(Byte::Undef).take(padding));
                         result
                     })
                     .flatten()
                     .collect()
             }
+            Value::Struct { name, fields } => {
+                let struct_type = structs
+                    .get(name)
+                    .expect("struct type matched with `name` must exist")
+                    .as_ref()
+                    .expect("`struct_type` must have its definition");
+                let (size_of, _, offsets) = struct_type
+                    .get_struct_size_align_offsets()
+                    .expect("`struct_type` must be struct type")
+                    .as_ref()
+                    .expect("`offsets` must be `Some`");
+                let mut values = iter::repeat(Byte::Undef).take(*size_of).collect::<Vec<_>>();
+
+                assert_eq!(fields.len(), offsets.len());
+                izip!(fields, offsets).for_each(|(f, o)| {
+                    let result = Self::value_to_bytes(f.deref(), structs);
+                    let size_of_data = f.deref().dtype().size_align_of(structs).unwrap().0;
+                    values.splice(*o..(*o + size_of_data), result.iter().cloned());
+                });
+
+                values
+            }
         }
     }
 }
 
 impl Memory {
-    fn alloc(&mut self, dtype: &Dtype) -> Result<usize, InterpreterError> {
+    fn alloc(
+        &mut self,
+        dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<usize, InterpreterError> {
         let bid = self.inner.len();
-        self.inner.push(Some(Byte::block_from_dtype(dtype)));
+        self.inner
+            .push(Some(Byte::block_from_dtype(dtype, structs)));
         Ok(bid)
     }
 
@@ -598,34 +993,55 @@ impl Memory {
         bid: usize,
         offset: isize,
         dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
     ) -> Result<(), InterpreterError> {
         let block = &mut self.inner[bid];
         assert_eq!(offset, 0);
         assert_eq!(
             block.as_mut().unwrap().len(),
-            dtype.size_align_of().unwrap().0
+            dtype.size_align_of(structs).unwrap().0
         );
         *block = None;
         Ok(())
     }
 
-    fn load(&self, bid: usize, offset: isize, dtype: &Dtype) -> Result<Value, InterpreterError> {
-        assert!(0 <= offset);
-        let offset = offset as usize;
-        let size = dtype.size_align_of().unwrap().0;
-        let mut iter = self.inner[bid].as_ref().unwrap()[offset..(offset + size)].iter();
-        Byte::bytes_to_value(&mut iter, dtype)
+    fn load(
+        &self,
+        bid: usize,
+        offset: isize,
+        dtype: &Dtype,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<Value, InterpreterError> {
+        let size = dtype.size_align_of(structs).unwrap().0;
+        let end = offset as usize + size;
+        let block = self.inner[bid].as_ref().unwrap();
+
+        if 0 <= offset && end <= block.len() {
+            let mut iter = block[offset as usize..end].iter();
+            Byte::bytes_to_value(&mut iter, dtype, structs)
+        } else {
+            Ok(Value::undef(dtype.clone()))
+        }
     }
 
-    fn store(&mut self, bid: usize, offset: isize, value: &Value) {
-        assert!(0 <= offset);
-        let offset = offset as usize;
-        let size = value.dtype().size_align_of().unwrap().0;
-        let bytes = Byte::value_to_bytes(value);
-        self.inner[bid]
-            .as_mut()
-            .unwrap()
-            .splice(offset..(offset + size), bytes.iter().cloned());
+    fn store(
+        &mut self,
+        bid: usize,
+        offset: isize,
+        value: &Value,
+        structs: &HashMap<String, Option<Dtype>>,
+    ) -> Result<(), ()> {
+        let size = value.dtype().size_align_of(structs).unwrap().0;
+        let end = offset as usize + size;
+        let bytes = Byte::value_to_bytes(value, structs);
+        let block = self.inner[bid].as_mut().unwrap();
+
+        if 0 <= offset && end <= block.len() {
+            block.splice(offset as usize..end, bytes.iter().cloned());
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -680,26 +1096,39 @@ impl<'i> State<'i> {
     fn alloc_global_variables(&mut self) -> Result<(), InterpreterError> {
         for (name, decl) in &self.ir.decls {
             // Memory allocation
-            let bid = self.memory.alloc(&decl.dtype())?;
+            let bid = self.memory.alloc(&decl.dtype(), &self.ir.structs)?;
             self.global_map.insert(name.clone(), bid)?;
 
             // Initialize allocated memory space
             match decl {
-                Declaration::Variable { dtype, initializer } => match &dtype {
-                    ir::Dtype::Unit { .. } => (),
-                    ir::Dtype::Int { .. } | ir::Dtype::Float { .. } | ir::Dtype::Pointer { .. } => {
-                        let value = if let Some(constant) = initializer {
-                            self.interp_constant(constant.clone())
-                        } else {
-                            Value::default_from_dtype(&dtype)
-                        };
+                Declaration::Variable { dtype, initializer } => {
+                    let value = if let Some(initializer) = initializer {
+                        Value::try_from_initializer(initializer, dtype, &self.ir.structs).map_err(
+                            |_| InterpreterError::Misc {
+                                func_name: self.stack_frame.func_name.clone(),
+                                pc: self.stack_frame.pc,
+                                msg: format!(
+                                    "fail to translate `Initializer` and `{}` to `Value`",
+                                    dtype
+                                ),
+                            },
+                        )?
+                    } else {
+                        Value::default_from_dtype(&dtype, &self.ir.structs)
+                            .expect("default value must be derived from `dtype`")
+                    };
 
-                        self.memory.store(bid, 0, &value);
-                    }
-                    ir::Dtype::Array { .. } => todo!("Initializer::List is needed"),
-                    ir::Dtype::Function { .. } => panic!("function variable does not exist"),
-                    ir::Dtype::Typedef { .. } => panic!("typedef should be replaced by real dtype"),
-                },
+                    self.memory
+                        .store(bid, 0, &value, &self.ir.structs)
+                        .map_err(|_| InterpreterError::Misc {
+                            func_name: self.stack_frame.func_name.clone(),
+                            pc: self.stack_frame.pc,
+                            msg: format!(
+                                "fail to store {:?} into memory with bid: {}, offset: {}",
+                                value, bid, 0,
+                            ),
+                        })?
+                }
                 // If functin declaration, skip initialization
                 Declaration::Function { .. } => (),
             }
@@ -711,7 +1140,7 @@ impl<'i> State<'i> {
     fn alloc_local_variables(&mut self) -> Result<(), InterpreterError> {
         // add alloc register
         for (id, allocation) in self.stack_frame.func_def.allocations.iter().enumerate() {
-            let bid = self.memory.alloc(&allocation)?;
+            let bid = self.memory.alloc(&allocation, &self.ir.structs)?;
             let ptr = Value::pointer(Some(bid), 0, allocation.deref().clone());
             let rid = RegisterId::local(id);
 
@@ -759,7 +1188,8 @@ impl<'i> State<'i> {
                 .get_pointer()
                 .unwrap();
             assert_eq!(d.deref(), dtype);
-            self.memory.dealloc(bid.unwrap(), *offset, dtype)?;
+            self.memory
+                .dealloc(bid.unwrap(), *offset, dtype, &self.ir.structs)?;
         }
 
         // restore previous state
@@ -891,13 +1321,22 @@ impl<'i> State<'i> {
                 let ptr = self.interp_operand(ptr.clone())?;
                 let value = self.interp_operand(value.clone())?;
                 let (bid, offset, _) = self.interp_ptr(&ptr)?;
-                self.memory.store(bid, offset, &value);
+                self.memory
+                    .store(bid, offset, &value, &self.ir.structs)
+                    .map_err(|_| InterpreterError::Misc {
+                        func_name: self.stack_frame.func_name.clone(),
+                        pc: self.stack_frame.pc,
+                        msg: format!(
+                            "fail to store {:?} into memory with bid: {}, offset: {}",
+                            value, bid, offset,
+                        ),
+                    })?;
                 Value::Unit
             }
             Instruction::Load { ptr, .. } => {
                 let ptr = self.interp_operand(ptr.clone())?;
                 let (bid, offset, dtype) = self.interp_ptr(&ptr)?;
-                self.memory.load(bid, offset, &dtype)?
+                self.memory.load(bid, offset, &dtype, &self.ir.structs)?
             }
             Instruction::Call { callee, args, .. } => {
                 let ptr = self.interp_operand(callee.clone())?;
@@ -991,21 +1430,6 @@ impl<'i> State<'i> {
 
     fn interp_constant(&self, value: Constant) -> Value {
         match value {
-            Constant::Undef { dtype } => Value::Undef { dtype },
-            Constant::Unit => Value::Unit,
-            Constant::Int {
-                value,
-                width,
-                is_signed,
-            } => Value::Int {
-                value,
-                width,
-                is_signed,
-            },
-            Constant::Float { value, width } => Value::Float {
-                value: value.into_inner(),
-                width,
-            },
             Constant::GlobalVariable { name, dtype } => {
                 let bid = self
                     .global_map
@@ -1019,6 +1443,7 @@ impl<'i> State<'i> {
                     dtype,
                 }
             }
+            constant => Value::try_from(constant).expect("constant must be transformed to value"),
         }
     }
 

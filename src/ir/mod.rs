@@ -1,10 +1,12 @@
 mod dtype;
 mod interp;
+mod parse;
 mod write_ir;
 
 use core::convert::TryFrom;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
+use hexf::{parse_hexf32, parse_hexf64};
 use lang_c::ast;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
@@ -12,17 +14,19 @@ use std::hash::{Hash, Hasher};
 
 pub use dtype::{Dtype, DtypeError, HasDtype};
 pub use interp::{interp, Value};
+pub use parse::Parse;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranslationUnit {
     pub decls: HashMap<String, Declaration>,
+    pub structs: HashMap<String, Option<Dtype>>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Declaration {
     Variable {
         dtype: Dtype,
-        initializer: Option<Constant>,
+        initializer: Option<ast::Initializer>,
     },
     Function {
         signature: FunctionSignature,
@@ -53,7 +57,8 @@ impl TryFrom<Dtype> for Declaration {
             Dtype::Int { .. }
             | Dtype::Float { .. }
             | Dtype::Pointer { .. }
-            | Dtype::Array { .. } => Ok(Declaration::Variable {
+            | Dtype::Array { .. }
+            | Dtype::Struct { .. } => Ok(Declaration::Variable {
                 dtype,
                 initializer: None,
             }),
@@ -67,7 +72,7 @@ impl TryFrom<Dtype> for Declaration {
 }
 
 impl Declaration {
-    pub fn get_variable(&self) -> Option<(&Dtype, &Option<Constant>)> {
+    pub fn get_variable(&self) -> Option<(&Dtype, &Option<ast::Initializer>)> {
         if let Self::Variable { dtype, initializer } = self {
             Some((dtype, initializer))
         } else {
@@ -258,12 +263,12 @@ pub enum BlockExit {
     },
     ConditionalJump {
         condition: Operand,
-        arg_then: JumpArg,
-        arg_else: JumpArg,
+        arg_then: Box<JumpArg>,
+        arg_else: Box<JumpArg>,
     },
     Switch {
         value: Operand,
-        default: JumpArg,
+        default: Box<JumpArg>,
         cases: Vec<(Constant, JumpArg)>,
     },
     Return {
@@ -310,7 +315,16 @@ impl JumpArg {
 
 impl fmt::Display for JumpArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}({:?})", self.bid, self.args)
+        write!(
+            f,
+            "{}({})",
+            self.bid,
+            self.args
+                .iter()
+                .map(|a| format!("{}:{}", a, a.dtype()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -495,32 +509,71 @@ impl TryFrom<&ast::Constant> for Constant {
     fn try_from(constant: &ast::Constant) -> Result<Self, Self::Error> {
         match constant {
             ast::Constant::Integer(integer) => {
-                let is_signed = !integer.suffix.unsigned;
-
                 let dtype = match integer.suffix.size {
                     ast::IntegerSize::Int => Dtype::INT,
                     ast::IntegerSize::Long => Dtype::LONG,
                     ast::IntegerSize::LongLong => Dtype::LONGLONG,
-                }
-                .set_signed(is_signed);
-
-                let value = if is_signed {
-                    integer.number.parse::<i128>().unwrap() as u128
-                } else {
-                    integer.number.parse::<u128>().unwrap()
                 };
 
-                Ok(Self::int(value, dtype))
+                let pat = match integer.base {
+                    ast::IntegerBase::Decimal => Self::DECIMAL,
+                    ast::IntegerBase::Octal => Self::OCTAL,
+                    ast::IntegerBase::Hexadecimal => Self::HEXADECIMAL,
+                };
+                let value = u128::from_str_radix(integer.number.deref(), pat).unwrap();
+
+                let is_signed = !integer.suffix.unsigned && {
+                    // Even if `suffix` represents `signed`, integer literal cannot be translated
+                    // to minus value. For this reason, if the sign bit is on, dtype automatically
+                    // transformed to `unsigned`. Let's say integer literal is `0xFFFFFFFF`,
+                    // it translated to unsigned integer even though it has no `U` suffix.
+                    let width = dtype.get_int_width().unwrap();
+                    let threshold = 1u128 << (width as u128 - 1);
+                    value < threshold
+                };
+
+                Ok(Self::int(value, dtype.set_signed(is_signed)))
             }
             ast::Constant::Float(float) => {
+                let pat = match float.base {
+                    ast::FloatBase::Decimal => Self::DECIMAL,
+                    ast::FloatBase::Hexadecimal => Self::HEXADECIMAL,
+                };
+
                 let (dtype, value) = match float.suffix.format {
                     ast::FloatFormat::Float => {
                         // Casting from an f32 to an f64 is perfect and lossless (f32 -> f64)
                         // https://doc.rust-lang.org/stable/reference/expressions/operator-expr.html#type-cast-expressions
-                        (Dtype::FLOAT, float.number.parse::<f32>().unwrap() as f64)
+                        let value = match pat {
+                            Self::DECIMAL => float.number.parse::<f32>().unwrap() as f64,
+                            Self::HEXADECIMAL => {
+                                let mut hex_number = "0x".to_string();
+                                hex_number.push_str(float.number.deref());
+                                parse_hexf32(&hex_number, true).unwrap() as f64
+                            }
+                            _ => panic!(
+                                "Constant::try_from::<&ast::Constant>: \
+                                 {:?} is not a pattern of `pat`",
+                                pat
+                            ),
+                        };
+                        (Dtype::FLOAT, value)
                     }
                     ast::FloatFormat::Double => {
-                        (Dtype::DOUBLE, float.number.parse::<f64>().unwrap())
+                        let value = match pat {
+                            Self::DECIMAL => float.number.parse::<f64>().unwrap(),
+                            Self::HEXADECIMAL => {
+                                let mut hex_number = "0x".to_string();
+                                hex_number.push_str(float.number.deref());
+                                parse_hexf64(&hex_number, true).unwrap()
+                            }
+                            _ => panic!(
+                                "Constant::try_from::<&ast::Constant>: \
+                                 {:?} is not a pattern of `pat`",
+                                pat
+                            ),
+                        };
+                        (Dtype::DOUBLE, value)
                     }
                     ast::FloatFormat::LongDouble => {
                         panic!("`FloatFormat::LongDouble` is_unsupported")
@@ -546,27 +599,32 @@ impl TryFrom<&ast::Expression> for Constant {
     type Error = ();
 
     fn try_from(expr: &ast::Expression) -> Result<Self, Self::Error> {
-        if let ast::Expression::Constant(constant) = expr {
-            Self::try_from(&constant.node)
-        } else {
-            Err(())
-        }
-    }
-}
-
-impl TryFrom<&ast::Initializer> for Constant {
-    type Error = ();
-
-    fn try_from(initializer: &ast::Initializer) -> Result<Self, Self::Error> {
-        if let ast::Initializer::Expression(expr) = &initializer {
-            Self::try_from(&expr.node)
-        } else {
-            Err(())
+        match expr {
+            ast::Expression::Constant(constant) => Self::try_from(&constant.node),
+            ast::Expression::UnaryOperator(unary) => {
+                let constant = Self::try_from(&unary.node.operand.node)?;
+                // When an IR is generated, there are cases where some expressions must be
+                // interpreted unconditionally as compile-time constant value. In this case,
+                // we need to translate also the expression applied `minus` unary operator
+                // to compile-time constant value directly.
+                // Let's say expression is `case -1: { .. }`,
+                // `-1` must be interpreted to compile-time constant value.
+                match &unary.node.operator.node {
+                    ast::UnaryOperator::Minus => Ok(constant.minus()),
+                    ast::UnaryOperator::Plus => Ok(constant),
+                    _ => Err(()),
+                }
+            }
+            _ => Err(()),
         }
     }
 }
 
 impl Constant {
+    const DECIMAL: u32 = 10;
+    const OCTAL: u32 = 8;
+    const HEXADECIMAL: u32 = 16;
+
     #[inline]
     pub fn is_integer_constant(&self) -> bool {
         if let Self::Int { .. } = self {
@@ -629,6 +687,33 @@ impl Constant {
         }
     }
 
+    #[inline]
+    fn minus(self) -> Self {
+        match self {
+            Self::Int {
+                value,
+                width,
+                is_signed,
+            } => {
+                assert!(is_signed);
+                let minus_value = -(value as i128);
+                Self::Int {
+                    value: minus_value as u128,
+                    width,
+                    is_signed,
+                }
+            }
+            Self::Float { mut value, width } => {
+                *value.as_mut() *= -1.0f64;
+                Self::Float { value, width }
+            }
+            _ => panic!(
+                "constant value generated by `Constant::from_ast_expression` \
+                 must be `Constant{{Int, Float}}`"
+            ),
+        }
+    }
+
     pub fn is_undef(&self) -> bool {
         if let Self::Undef { .. } = self {
             true
@@ -643,9 +728,19 @@ impl fmt::Display for Constant {
         match self {
             Self::Undef { .. } => write!(f, "undef"),
             Self::Unit => write!(f, "unit"),
-            Self::Int { value, .. } => write!(f, "{}", value),
+            Self::Int {
+                value, is_signed, ..
+            } => write!(
+                f,
+                "{}",
+                if *is_signed {
+                    (*value as i128).to_string()
+                } else {
+                    value.to_string()
+                }
+            ),
             Self::Float { value, .. } => write!(f, "{}", value),
-            Self::GlobalVariable { name, .. } => write!(f, "%{}", name),
+            Self::GlobalVariable { name, .. } => write!(f, "@{}", name),
         }
     }
 }
@@ -664,7 +759,7 @@ impl HasDtype for Constant {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Named<T> {
     name: Option<String>,
     inner: T,

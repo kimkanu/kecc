@@ -9,21 +9,37 @@ use lang_c::ast;
 
 impl WriteLine for TranslationUnit {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write_indent(indent, write)?;
-        writeln!(write, "<variable list>")?;
-        writeln!(write)?;
+        // TODO: consider KECC IR parser in the future.
+        for (name, struct_type) in &self.structs {
+            let definition = if let Some(struct_type) = struct_type {
+                let fields = struct_type
+                    .get_struct_fields()
+                    .expect("`struct_type` must be struct type")
+                    .as_ref()
+                    .expect("`fields` must be `Some`");
+
+                let fields = fields
+                    .iter()
+                    .map(|f| f.deref().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!("{{ {} }}", fields)
+            } else {
+                "opaque".to_string()
+            };
+
+            writeln!(write, "struct {} : {}", name, definition)?;
+        }
+
         for (name, decl) in &self.decls {
             let _ = some_or!(decl.get_variable(), continue);
             (name, decl).write_line(indent, write)?;
         }
 
-        writeln!(write)?;
-        writeln!(write)?;
-        write_indent(indent, write)?;
-        writeln!(write, "<function list>")?;
-        writeln!(write)?;
         for (name, decl) in &self.decls {
             let _ = some_or!(decl.get_function(), continue);
+            writeln!(write)?;
             (name, decl).write_line(indent, write)?;
         }
 
@@ -37,66 +53,59 @@ impl WriteLine for (&String, &Declaration) {
         let decl = self.1;
 
         match decl {
-            Declaration::Variable { dtype, .. } => {
-                writeln!(write, "{} = {}", name, dtype)?;
+            Declaration::Variable { dtype, initializer } => {
+                writeln!(
+                    write,
+                    "var {} @{} = {}",
+                    dtype,
+                    name,
+                    if let Some(init) = initializer {
+                        init.write_string()
+                    } else {
+                        "default".to_string()
+                    }
+                )?;
             }
             Declaration::Function {
                 signature,
                 definition,
             } => {
-                let declaration = format!(
-                    "{} @{}({})",
-                    signature.ret,
-                    name,
-                    signature
-                        .params
-                        .iter()
-                        .map(|d| d.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
+                if let Some(definition) = definition.as_ref() {
+                    // print function definition
+                    writeln!(write, "fun {} @{} {{", signature.ret, name)?;
+                    // print meta data for function
+                    writeln!(
+                        write,
+                        "init:\n  bid: {}\n  allocations: \n{}",
+                        definition.bid_init,
+                        definition
+                            .allocations
+                            .iter()
+                            .enumerate()
+                            .map(|(i, a)| format!(
+                                "    %l{}:{}{}",
+                                i,
+                                a.deref(),
+                                if let Some(name) = a.name() {
+                                    format!(":{}", name)
+                                } else {
+                                    "".into()
+                                }
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )?;
 
-                match definition.as_ref() {
-                    Some(defintion) => {
-                        // print function definition
-                        writeln!(write, "define {} {{", declaration)?;
-                        // print meta data for function
-                        writeln!(
-                            write,
-                            "init:\n  bid: {}\n  allocations: \n{}\n",
-                            defintion.bid_init,
-                            defintion
-                                .allocations
-                                .iter()
-                                .enumerate()
-                                .map(|(i, a)| format!(
-                                    "    %l{}:{}{}",
-                                    i,
-                                    a.deref(),
-                                    if let Some(name) = a.name() {
-                                        format!(":{}", name)
-                                    } else {
-                                        "".into()
-                                    }
-                                ))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )?;
-
-                        for (id, block) in &defintion.blocks {
-                            writeln!(write, "block {}", id)?;
-                            (id, block).write_line(indent + 1, write)?;
-                            writeln!(write)?;
-                        }
-
-                        writeln!(write, "}}")?;
-                        writeln!(write)?;
+                    for (id, block) in &definition.blocks {
+                        writeln!(write, "\nblock {}:", id)?;
+                        (id, block).write_line(indent + 1, write)?;
                     }
-                    None => {
-                        // print declaration line only
-                        writeln!(write, "declare {}", declaration)?;
-                        writeln!(write)?;
-                    }
+
+                    writeln!(write, "}}")?;
+                } else {
+                    // print declaration line only
+                    writeln!(write, "fun {} @{}", signature.ret, name)?;
+                    writeln!(write)?;
                 }
             }
         }
@@ -189,19 +198,28 @@ impl WriteString for Operand {
 
 impl WriteOp for ast::BinaryOperator {
     fn write_operation(&self) -> String {
+        // TODO: represent signed & unsigned if necessary
         match self {
             Self::Multiply => "mul",
             Self::Divide => "div",
             Self::Modulo => "mod",
             Self::Plus => "add",
             Self::Minus => "sub",
+            Self::ShiftLeft => "shl",
+            Self::ShiftRight => "shr",
             Self::Equals => "cmp eq",
             Self::NotEquals => "cmp ne",
             Self::Less => "cmp lt",
             Self::LessOrEqual => "cmp le",
             Self::Greater => "cmp gt",
             Self::GreaterOrEqual => "cmp ge",
-            _ => todo!(),
+            Self::BitwiseAnd => "and",
+            Self::BitwiseXor => "xor",
+            Self::BitwiseOr => "or",
+            _ => todo!(
+                "ast::BinaryOperator::WriteOp: write operation for {:?} is needed",
+                self
+            ),
         }
         .to_string()
     }
@@ -210,8 +228,13 @@ impl WriteOp for ast::BinaryOperator {
 impl WriteOp for ast::UnaryOperator {
     fn write_operation(&self) -> String {
         match self {
+            Self::Plus => "plus",
             Self::Minus => "minus",
-            _ => todo!(),
+            Self::Negate => "negate",
+            _ => todo!(
+                "ast::UnaryOperator::WriteOp: write operation for {:?} is needed",
+                self
+            ),
         }
         .to_string()
     }
@@ -236,12 +259,12 @@ impl WriteString for BlockExit {
                 default,
                 cases,
             } => format!(
-                "switch {}, default: {} [\n{}\n  ]",
+                "switch {} default {} [\n{}\n  ]",
                 value.write_string(),
                 default,
                 cases
                     .iter()
-                    .map(|(v, b)| format!("    {}:{}, {}", v, v.dtype(), b))
+                    .map(|(v, b)| format!("    {}:{} {}", v, v.dtype(), b))
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
