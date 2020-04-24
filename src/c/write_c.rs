@@ -6,7 +6,7 @@ use std::io::{Result, Write};
 
 use crate::write_base::*;
 
-pub trait WriteStringIndent {
+pub trait WriteStringIndent: WriteString {
     fn write_string_indent(&self, _indent: usize) -> String;
 }
 
@@ -15,14 +15,14 @@ impl<T: WriteLine> WriteLine for Node<T> {
         self.node.write_line(indent, write)
     }
 }
-impl<T: WriteStringIndent> WriteStringIndent for Node<T> {
-    fn write_string_indent(&self, indent: usize) -> String {
-        self.node.write_string_indent(indent)
-    }
-}
 impl<T: WriteString> WriteString for Node<T> {
     fn write_string(&self) -> String {
         self.node.write_string()
+    }
+}
+impl<T: WriteStringIndent> WriteStringIndent for Node<T> {
+    fn write_string_indent(&self, indent: usize) -> String {
+        self.node.write_string_indent(indent)
     }
 }
 
@@ -135,6 +135,11 @@ impl WriteStringIndent for FunctionDefinition {
         )
     }
 }
+impl WriteString for FunctionDefinition {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteString for Identifier {
     fn write_string(&self) -> String {
@@ -155,6 +160,11 @@ impl WriteStringIndent for Declaration {
         )
     }
 }
+impl WriteString for Declaration {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for DeclarationSpecifier {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -166,6 +176,11 @@ impl WriteStringIndent for DeclarationSpecifier {
             Self::Alignment(_) => panic!("DeclarationSpecifier::Alignment"),
             Self::Extension(_) => panic!("DeclarationSpecifier::Extension"),
         }
+    }
+}
+impl WriteString for DeclarationSpecifier {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -201,6 +216,11 @@ impl WriteStringIndent for TypeSpecifier {
         }
     }
 }
+impl WriteString for TypeSpecifier {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for StructType {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -219,6 +239,11 @@ impl WriteStringIndent for StructType {
         }
     }
 }
+impl WriteString for StructType {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for StructDeclaration {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -226,6 +251,11 @@ impl WriteStringIndent for StructDeclaration {
             Self::Field(field) => field.write_string_indent(_indent),
             Self::StaticAssert(_) => panic!("StructDeclaration::StaticAssert"),
         }
+    }
+}
+impl WriteString for StructDeclaration {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -238,11 +268,21 @@ impl WriteStringIndent for StructField {
         )
     }
 }
+impl WriteString for StructField {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for StructDeclarator {
     fn write_string_indent(&self, _indent: usize) -> String {
         assert_eq!(true, self.bit_width.is_none());
         self.declarator.write_string_indent(_indent)
+    }
+}
+impl WriteString for StructDeclarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -263,6 +303,11 @@ impl WriteStringIndent for AlignmentSpecifier {
         }
     }
 }
+impl WriteString for AlignmentSpecifier {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for InitDeclarator {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -276,13 +321,37 @@ impl WriteStringIndent for InitDeclarator {
         }
     }
 }
+impl WriteString for InitDeclarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for Initializer {
     fn write_string_indent(&self, _indent: usize) -> String {
         match self {
             Self::Expression(expr) => expr.write_string_indent(_indent),
-            Self::List(_) => panic!("Initializer::List"),
+            Self::List(items) => format!(
+                "{{{}}}",
+                items
+                    .iter()
+                    .map(|s| s.write_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
+    }
+}
+impl WriteString for Initializer {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
+
+impl WriteString for InitializerListItem {
+    fn write_string(&self) -> String {
+        assert!(self.designation.is_empty());
+        self.initializer.write_string()
     }
 }
 
@@ -322,6 +391,11 @@ impl WriteStringIndent for Declarator {
         )
     }
 }
+impl WriteString for Declarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for DerivedDeclarator {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -335,6 +409,11 @@ impl WriteStringIndent for DerivedDeclarator {
                 format!("({})", kr_func_decl.write_string(),)
             }
         }
+    }
+}
+impl WriteString for DerivedDeclarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -357,6 +436,11 @@ impl WriteStringIndent for ArrayDeclarator {
         )
     }
 }
+impl WriteString for ArrayDeclarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteString for TypeQualifier {
     fn write_string(&self) -> String {
@@ -375,6 +459,11 @@ impl WriteStringIndent for ArraySize {
         }
     }
 }
+impl WriteString for ArraySize {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for FunctionDeclarator {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -389,6 +478,11 @@ impl WriteStringIndent for FunctionDeclarator {
         )
     }
 }
+impl WriteString for FunctionDeclarator {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for ParameterDeclaration {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -398,6 +492,11 @@ impl WriteStringIndent for ParameterDeclaration {
             self.specifiers.write_string_indent(_indent),
             self.declarator.write_string_indent(_indent),
         )
+    }
+}
+impl WriteString for ParameterDeclaration {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -410,6 +509,11 @@ impl WriteStringIndent for DeclaratorKind {
         }
     }
 }
+impl WriteString for DeclaratorKind {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for BlockItem {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -418,6 +522,11 @@ impl WriteStringIndent for BlockItem {
             Self::StaticAssert(_) => panic!("BlockItem::StaticAssert"),
             Self::Statement(stmt) => stmt.write_string_indent(_indent),
         }
+    }
+}
+impl WriteString for BlockItem {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -429,6 +538,11 @@ impl WriteStringIndent for ForInitializer {
             Self::Declaration(decl) => decl.write_string_indent(_indent),
             Self::StaticAssert(_) => panic!("ForInitializer::StaticAssert"),
         }
+    }
+}
+impl WriteString for ForInitializer {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -470,6 +584,11 @@ impl WriteStringIndent for Statement {
         }
     }
 }
+impl WriteString for Statement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for IfStatement {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -490,6 +609,11 @@ impl WriteStringIndent for IfStatement {
         }
     }
 }
+impl WriteString for IfStatement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for WhileStatement {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -501,6 +625,11 @@ impl WriteStringIndent for WhileStatement {
         )
     }
 }
+impl WriteString for WhileStatement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for DoWhileStatement {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -510,6 +639,11 @@ impl WriteStringIndent for DoWhileStatement {
             self.expression.write_string_indent(_indent),
             "  ".repeat(_indent),
         )
+    }
+}
+impl WriteString for DoWhileStatement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -525,6 +659,11 @@ impl WriteStringIndent for ForStatement {
         )
     }
 }
+impl WriteString for ForStatement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for SwitchStatement {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -534,6 +673,11 @@ impl WriteStringIndent for SwitchStatement {
             self.statement.write_string_indent(_indent),
             "  ".repeat(_indent),
         )
+    }
+}
+impl WriteString for SwitchStatement {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -548,7 +692,9 @@ impl WriteStringIndent for Expression {
             Self::Call(call) => call.write_string_indent(_indent),
             Self::CompoundLiteral(_) => panic!("Expression::CompoundLiteral"),
             Self::SizeOf(typename) => format!("sizeof({})", typename.write_string_indent(_indent)),
-            Self::AlignOf(typename) => format!("_Alignof({})", typename.write_string_indent(_indent)),
+            Self::AlignOf(typename) => {
+                format!("_Alignof({})", typename.write_string_indent(_indent))
+            }
             Self::UnaryOperator(unary) => unary.write_string_indent(_indent),
             Self::Cast(cast) => cast.write_string_indent(_indent),
             Self::BinaryOperator(binary) => binary.write_string_indent(_indent),
@@ -567,6 +713,11 @@ impl WriteStringIndent for Expression {
         }
     }
 }
+impl WriteString for Expression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for Label {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -575,6 +726,11 @@ impl WriteStringIndent for Label {
             Self::Case(expr) => format!("case {}", expr.write_string_indent(_indent)),
             Self::Default => "default".to_string(),
         }
+    }
+}
+impl WriteString for Label {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -591,6 +747,11 @@ impl WriteStringIndent for MemberExpression {
         )
     }
 }
+impl WriteString for MemberExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for CallExpression {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -605,6 +766,11 @@ impl WriteStringIndent for CallExpression {
         )
     }
 }
+impl WriteString for CallExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for TypeName {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -615,6 +781,11 @@ impl WriteStringIndent for TypeName {
         )
     }
 }
+impl WriteString for TypeName {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for SpecifierQualifier {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -622,6 +793,11 @@ impl WriteStringIndent for SpecifierQualifier {
             Self::TypeSpecifier(type_specifier) => type_specifier.write_string_indent(_indent),
             Self::TypeQualifier(type_qualifier) => type_qualifier.write_string(),
         }
+    }
+}
+impl WriteString for SpecifierQualifier {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -639,6 +815,11 @@ impl WriteStringIndent for UnaryOperatorExpression {
                 self.operand.write_string_indent(_indent),
             ),
         }
+    }
+}
+impl WriteString for UnaryOperatorExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -667,6 +848,11 @@ impl WriteStringIndent for CastExpression {
         )
     }
 }
+impl WriteString for CastExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
+    }
+}
 
 impl WriteStringIndent for BinaryOperatorExpression {
     fn write_string_indent(&self, _indent: usize) -> String {
@@ -683,6 +869,11 @@ impl WriteStringIndent for BinaryOperatorExpression {
                 self.rhs.write_string_indent(_indent),
             ),
         }
+    }
+}
+impl WriteString for BinaryOperatorExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
 
@@ -801,5 +992,10 @@ impl WriteStringIndent for ConditionalExpression {
             self.then_expression.write_string_indent(_indent),
             self.else_expression.write_string_indent(_indent),
         )
+    }
+}
+impl WriteString for ConditionalExpression {
+    fn write_string(&self) -> String {
+        self.write_string_indent(0)
     }
 }
