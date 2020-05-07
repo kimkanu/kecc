@@ -400,13 +400,13 @@ impl WriteString for Declarator {
 impl WriteStringIndent for DerivedDeclarator {
     fn write_string_indent(&self, _indent: usize) -> String {
         match self {
-            Self::Pointer(pointer_qualifiers) => format!("* {}", pointer_qualifiers.write_string()),
+            Self::Pointer(pointer_qualifiers) => format!("*{}", pointer_qualifiers.write_string()),
             Self::Array(array_decl) => array_decl.write_string_indent(_indent),
             Self::Function(func_decl) => func_decl.write_string_indent(_indent),
             // Support when K&R function has no parameter
             Self::KRFunction(kr_func_decl) => {
                 assert_eq!(true, kr_func_decl.is_empty());
-                format!("({})", kr_func_decl.write_string(),)
+                "()".to_string()
             }
         }
     }
@@ -505,7 +505,7 @@ impl WriteStringIndent for DeclaratorKind {
         match self {
             Self::Abstract => "".to_string(),
             Self::Identifier(identifier) => identifier.write_string(),
-            Self::Declarator(decl) => format!("({})", decl.write_string_indent(_indent),),
+            Self::Declarator(decl) => format!("({})", decl.write_string_indent(_indent)),
         }
     }
 }
