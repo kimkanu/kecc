@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use hexf::{parse_hexf32, parse_hexf64};
 use lang_c::ast;
 use ordered_float::OrderedFloat;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
 pub use dtype::{Dtype, DtypeError, HasDtype};
@@ -18,7 +18,7 @@ pub use parse::Parse;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranslationUnit {
-    pub decls: HashMap<String, Declaration>,
+    pub decls: BTreeMap<String, Declaration>,
     pub structs: HashMap<String, Option<Dtype>>,
 }
 
@@ -161,7 +161,7 @@ pub struct FunctionDefinition {
     pub allocations: Vec<Named<Dtype>>,
 
     /// Basic blocks.
-    pub blocks: HashMap<BlockId, Block>,
+    pub blocks: BTreeMap<BlockId, Block>,
 
     /// The initial block id.
     pub bid_init: BlockId,
@@ -186,7 +186,6 @@ pub struct Block {
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Instruction {
-    // TODO: the variants of Instruction will be added in the future
     Nop,
     BinOp {
         op: ast::BinaryOperator,
@@ -255,7 +254,6 @@ impl Instruction {
     }
 }
 
-// TODO
 #[derive(Debug, PartialEq, Clone)]
 pub enum BlockExit {
     Jump {

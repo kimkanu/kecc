@@ -1,12 +1,16 @@
 use lang_c::ast::*;
 use std::fs::{self, File};
-use std::io::{stderr, Write};
+use std::io::{stderr, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
 use wait_timeout::ChildExt;
 
 use crate::*;
+
+// Rust sets an exit code of 101 when the process panicked.
+// So, we decide KECC sets an exit code of 102 after 101 when the test skipped.
+pub const SKIP_TEST: i32 = 102;
 
 pub fn test_write_c(unit: &TranslationUnit, _path: &Path) {
     let temp_dir = tempdir().expect("temp dir creation failed");
@@ -37,17 +41,25 @@ pub fn test_irgen(unit: &TranslationUnit, path: &Path) {
 
     // Compile c file: If fails, test is vacuously success
     if !Command::new("gcc")
-        .args(&["-O1", &file_path, "-o", &bin_path])
+        .args(&[
+            "-fsanitize=undefined",
+            "-fno-sanitize-recover=all",
+            "-O1",
+            &file_path,
+            "-o",
+            &bin_path,
+        ])
         .stderr(Stdio::null())
         .status()
         .unwrap()
         .success()
     {
-        return;
+        ::std::process::exit(SKIP_TEST);
     }
 
     // Execute compiled executable
     let mut child = Command::new(fs::canonicalize(bin_path.clone()).unwrap())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("failed to execute the compiled executable");
 
@@ -64,10 +76,22 @@ pub fn test_irgen(unit: &TranslationUnit, path: &Path) {
             println!("timeout occurs");
             child.kill().unwrap();
             child.wait().unwrap();
-            return;
+            ::std::process::exit(SKIP_TEST);
         }
     );
-    let status = some_or!(status.code(), return);
+
+    if child
+        .stderr
+        .expect("`stderr` of `child` must be `Some`")
+        .bytes()
+        .next()
+        .is_some()
+    {
+        println!("error occurs");
+        ::std::process::exit(SKIP_TEST);
+    }
+
+    let status = some_or_exit!(status.code(), SKIP_TEST);
 
     let ir = match Irgen::default().translate(unit) {
         Ok(ir) => ir,

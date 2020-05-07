@@ -16,7 +16,7 @@ peg::parser! {
 
         pub rule translation_unit() -> TranslationUnit
             = _ ds:(named_decl() ** __) _ {
-                let mut decls = HashMap::new();
+                let mut decls = BTreeMap::new();
                 for decl in ds {
                     let result = decls.insert(decl.name.unwrap(), decl.inner);
                     assert!(result.is_none());
@@ -238,7 +238,7 @@ peg::parser! {
             }
         /
             "unit" {
-                Constant::undef(Dtype::unit()) // TODO
+                Constant::unit()
             }
         /
             "<constant>" {
