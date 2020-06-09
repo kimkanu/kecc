@@ -466,8 +466,8 @@ impl TryFrom<&ast::ParameterDeclaration> for Dtype {
 impl Dtype {
     pub const BITS_OF_BYTE: usize = 8;
     pub const SIZE_OF_BYTE: usize = 1;
-    // TODO: consider architecture dependency in the future
-    pub const SIZE_OF_POINTER: usize = 4;
+    // TODO: consider architecture dependency (current: 64-bit architecture)
+    pub const SIZE_OF_POINTER: usize = 8;
 
     pub const SIZE_OF_CHAR: usize = 1;
     pub const SIZE_OF_SHORT: usize = 2;
@@ -1312,7 +1312,7 @@ impl fmt::Display for Dtype {
             }
             Self::Function { ret, params } => write!(
                 f,
-                "{} ({})",
+                "[ret:{} params:({})]",
                 ret,
                 params
                     .iter()

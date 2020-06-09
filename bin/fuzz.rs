@@ -2,10 +2,8 @@
 extern crate clap;
 use clap::{crate_authors, crate_description, crate_version, App};
 
-#[macro_use]
 extern crate kecc;
 
-use kecc::{Parse, Translate};
 use std::path::Path;
 
 fn main() {
@@ -18,14 +16,20 @@ fn main() {
         .get_matches();
 
     let input = matches.value_of("INPUT").unwrap();
-    let unit = ok_or_exit!(Parse::default().translate(&input), 1);
 
     if matches.is_present("print") {
-        kecc::test_write_c(&unit, Path::new(&input));
+        kecc::test_write_c(Path::new(&input));
+        return;
     }
 
     if matches.is_present("irgen") {
-        kecc::test_irgen(&unit, Path::new(&input));
+        kecc::test_irgen(Path::new(&input));
+        return;
+    }
+
+    if matches.is_present("irparse") {
+        kecc::test_irparse(Path::new(&input));
+        return;
     }
 
     if matches.is_present("simplify-cfg") {
@@ -43,4 +47,10 @@ fn main() {
     if matches.is_present("gvn") {
         todo!("test gvn");
     }
+
+    assert_eq!(
+        Path::new(input).extension(),
+        Some(std::ffi::OsStr::new("ir"))
+    );
+    kecc::test_asmgen(Path::new(&input));
 }
