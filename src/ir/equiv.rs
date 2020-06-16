@@ -110,11 +110,141 @@ fn is_equiv_block(lhs: &Block, rhs: &Block, map: &HashMap<BlockId, BlockId>) -> 
         return false;
     }
 
-    if lhs.instructions != rhs.instructions {
+    if lhs.instructions.len() != rhs.instructions.len() {
         return false;
     }
 
+    for (l, r) in izip!(&lhs.instructions, &rhs.instructions) {
+        if !is_equiv_instruction(l, r, map) {
+            return false;
+        }
+    }
+
     is_equiv_block_exit(&lhs.exit, &rhs.exit, map)
+}
+
+fn is_equiv_instruction(
+    lhs: &Instruction,
+    rhs: &Instruction,
+    map: &HashMap<BlockId, BlockId>,
+) -> bool {
+    match (lhs, rhs) {
+        (Instruction::Nop, Instruction::Nop) => true,
+        (
+            Instruction::BinOp {
+                op,
+                lhs,
+                rhs,
+                dtype,
+            },
+            Instruction::BinOp {
+                op: op_other,
+                lhs: lhs_other,
+                rhs: rhs_other,
+                dtype: dtype_other,
+            },
+        ) => {
+            op == op_other
+                && is_equiv_operand(lhs, lhs_other, map)
+                && is_equiv_operand(rhs, rhs_other, map)
+                && dtype == dtype_other
+        }
+        (
+            Instruction::UnaryOp { op, operand, dtype },
+            Instruction::UnaryOp {
+                op: op_other,
+                operand: operand_other,
+                dtype: dtype_other,
+            },
+        ) => {
+            op == op_other && is_equiv_operand(operand, operand_other, map) && dtype == dtype_other
+        }
+        (
+            Instruction::Store { ptr, value },
+            Instruction::Store {
+                ptr: ptr_other,
+                value: value_other,
+            },
+        ) => is_equiv_operand(ptr, ptr_other, map) && is_equiv_operand(value, value_other, map),
+        (Instruction::Load { ptr }, Instruction::Load { ptr: ptr_other }) => {
+            is_equiv_operand(ptr, ptr_other, map)
+        }
+        (
+            Instruction::Call {
+                callee,
+                args,
+                return_type,
+            },
+            Instruction::Call {
+                callee: callee_other,
+                args: args_other,
+                return_type: return_type_other,
+            },
+        ) => {
+            is_equiv_operand(callee, callee_other, map)
+                && args.len() == args_other.len()
+                && izip!(args, args_other).all(|(l, r)| is_equiv_operand(l, r, map))
+                && return_type == return_type_other
+        }
+        (
+            Instruction::TypeCast {
+                value,
+                target_dtype,
+            },
+            Instruction::TypeCast {
+                value: value_other,
+                target_dtype: target_dtype_other,
+            },
+        ) => is_equiv_operand(value, value_other, map) && target_dtype == target_dtype_other,
+        (
+            Instruction::GetElementPtr { ptr, offset, dtype },
+            Instruction::GetElementPtr {
+                ptr: ptr_other,
+                offset: offset_other,
+                dtype: dtype_other,
+            },
+        ) => {
+            is_equiv_operand(ptr, ptr_other, map)
+                && is_equiv_operand(offset, offset_other, map)
+                && dtype == dtype_other
+        }
+        _ => false,
+    }
+}
+
+fn is_equiv_operand(lhs: &Operand, rhs: &Operand, map: &HashMap<BlockId, BlockId>) -> bool {
+    match (lhs, rhs) {
+        (Operand::Constant(_), Operand::Constant(_)) => lhs == rhs,
+        (
+            Operand::Register { rid, dtype },
+            Operand::Register {
+                rid: rid_other,
+                dtype: dtype_other,
+            },
+        ) => is_equiv_rid(rid, rid_other, map) && dtype == dtype_other,
+        _ => false,
+    }
+}
+
+fn is_equiv_rid(lhs: &RegisterId, rhs: &RegisterId, map: &HashMap<BlockId, BlockId>) -> bool {
+    match (lhs, rhs) {
+        (RegisterId::Local { .. }, RegisterId::Local { .. }) => lhs == rhs,
+        (
+            RegisterId::Arg { bid, aid },
+            RegisterId::Arg {
+                bid: bid_other,
+                aid: aid_other,
+            },
+        ) => map.get(bid) == Some(bid_other) && aid == aid_other,
+        (
+            RegisterId::Temp { bid, iid },
+            RegisterId::Temp {
+                bid: bid_other,
+                iid: iid_other,
+            },
+        ) => map.get(bid) == Some(bid_other) && iid == iid_other,
+        _ => false,
+    }
 }
 
 fn is_equiv_block_exit(lhs: &BlockExit, rhs: &BlockExit, map: &HashMap<BlockId, BlockId>) -> bool {
@@ -134,7 +264,7 @@ fn is_equiv_block_exit(lhs: &BlockExit, rhs: &BlockExit, map: &HashMap<BlockId, 
                 arg_else: arg_else_other,
             },
         ) => {
-            if condition != condition_other {
+            if !is_equiv_operand(condition, condition_other, map) {
                 return false;
             }
             if !is_equiv_arg(arg_then, arg_then_other, map) {
@@ -157,7 +287,7 @@ fn is_equiv_block_exit(lhs: &BlockExit, rhs: &BlockExit, map: &HashMap<BlockId, 
                 cases: cases_other,
             },
         ) => {
-            if value != value_other {
+            if !is_equiv_operand(value, value_other, map) {
                 return false;
             }
             if !is_equiv_arg(default.deref(), default_other.deref(), map) {
@@ -176,6 +306,9 @@ fn is_equiv_block_exit(lhs: &BlockExit, rhs: &BlockExit, map: &HashMap<BlockId, 
             }
             true
         }
+        (BlockExit::Return { value }, BlockExit::Return { value: value_other }) => {
+            is_equiv_operand(value, value_other, map)
+        }
         _ => lhs == rhs,
     }
 }
@@ -184,8 +317,13 @@ fn is_equiv_arg(lhs: &JumpArg, rhs: &JumpArg, map: &HashMap<BlockId, BlockId>) -
     if map.get(&lhs.bid) != Some(&rhs.bid) {
         return false;
     }
-    if lhs.args != rhs.args {
+    if lhs.args.len() != rhs.args.len() {
         return false;
+    }
+    for (l, r) in izip!(&lhs.args, &rhs.args) {
+        if !is_equiv_operand(l, r, map) {
+            return false;
+        }
     }
     true
 }
