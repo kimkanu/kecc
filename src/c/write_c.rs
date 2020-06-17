@@ -999,9 +999,3 @@ impl WriteString for ConditionalExpression {
         self.write_string_indent(0)
     }
 }
-
-impl WriteString for Initializer {
-    fn write_string(&self) -> String {
-        todo!()
-    }
-}
