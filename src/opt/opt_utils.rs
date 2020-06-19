@@ -237,10 +237,11 @@ fn intersect_idom(
 }
 
 impl FunctionDefinition {
-    pub fn walk<F>(&mut self, walker: F) -> ()
+    pub fn walk<F>(&mut self, walker: F) -> bool
     where
         F: Fn(&mut Operand) -> bool + Copy,
     {
+        let mut total = false;
         loop {
             let mut result = false;
             for (_, block) in self.blocks.iter_mut() {
@@ -249,10 +250,12 @@ impl FunctionDefinition {
                 }
                 result = result || walk_exit(&mut block.exit, walker);
             }
+            total = total || result;
             if !result {
                 break;
             }
         }
+        total
     }
 }
 

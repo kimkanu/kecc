@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 // Neccessary for skeleton code.
 #![allow(unreachable_code)]
 // Necessary to allow `iter.fold(false, |l, r| l || r)`. It's used when iteration should not be
