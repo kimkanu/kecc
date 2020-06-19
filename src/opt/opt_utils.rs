@@ -267,31 +267,42 @@ where
     match instr.deref_mut() {
         Instruction::Nop => {}
         Instruction::BinOp { lhs, rhs, .. } => {
-            result = result || walker(lhs);
-            result = result || walker(rhs);
+            let res = walker(lhs);
+            result = result || res;
+            let res = walker(rhs);
+            result = result || res;
         }
         Instruction::UnaryOp { operand, .. } => {
-            result = result || walker(operand);
+            let res = walker(operand);
+            result = result || res;
         }
         Instruction::Store { ptr, value } => {
-            result = result || walker(ptr);
-            result = result || walker(value);
+            let res = walker(ptr);
+            result = result || res;
+            let res = walker(value);
+            result = result || res;
         }
         Instruction::Load { ptr } => {
-            result = result || walker(ptr);
+            let res = walker(ptr);
+            result = result || res;
         }
         Instruction::Call { callee, args, .. } => {
-            result = result || walker(callee);
+            let res = walker(callee);
+            result = result || res;
             for arg in args.iter_mut() {
-                result = result || walker(arg);
+                let res = walker(arg);
+                result = result || res;
             }
         }
         Instruction::TypeCast { value, .. } => {
-            result = result || walker(value);
+            let res = walker(value);
+            result = result || res;
         }
         Instruction::GetElementPtr { ptr, offset, .. } => {
-            result = result || walker(ptr);
-            result = result || walker(offset);
+            let res = walker(ptr);
+            result = result || res;
+            let res = walker(offset);
+            result = result || res;
         }
     }
     result
@@ -304,30 +315,38 @@ where
     let mut result = false;
     match exit {
         BlockExit::Jump { arg } => {
-            result = result || walk_jump_arg(arg, walker);
+            let res = walk_jump_arg(arg, walker);
+            result = result || res;
         }
         BlockExit::ConditionalJump {
             condition,
             arg_then,
             arg_else,
         } => {
-            result = result || walker(condition);
-            result = result || walk_jump_arg(arg_then.deref_mut(), walker);
-            result = result || walk_jump_arg(arg_else.deref_mut(), walker);
+            let res = walker(condition);
+            result = result || res;
+            let res = walk_jump_arg(arg_then.deref_mut(), walker);
+            result = result || res;
+            let res = walk_jump_arg(arg_else.deref_mut(), walker);
+            result = result || res;
         }
         BlockExit::Switch {
             value,
             default,
             cases,
         } => {
-            result = result || walker(value);
-            result = result || walk_jump_arg(default.deref_mut(), walker);
+            let res = walker(value);
+            result = result || res;
+            let res = walk_jump_arg(default.deref_mut(), walker);
+            result = result || res;
             for (_, arg) in cases.iter_mut() {
-                result = result || walk_jump_arg(arg, walker);
+                let res = walk_jump_arg(arg, walker);
+                result = result || res;
             }
         }
         BlockExit::Return { value } => {
-            result = result || walker(value);
+            let res = walker(value);
+            result = result || res;
         }
         BlockExit::Unreachable => {}
     }
@@ -340,7 +359,8 @@ where
 {
     let mut result = false;
     for op in arg.args.iter_mut() {
-        result = result || walker(op);
+        let res = walker(op);
+        result = result || res;
     }
     result
 }
