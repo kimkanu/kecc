@@ -4,9 +4,7 @@ use crate::opt::FunctionPass;
 use crate::*;
 use itertools::izip;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::iter::Map;
 use std::ops::Deref;
-use std::ops::DerefMut;
 pub type SimplifyCfg = FunctionPass<
     Repeat<(
         SimplifyCfgConstProp,
@@ -98,7 +96,10 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
         {
             if let BlockExit::Jump { arg } = &block_from.exit {
                 // when the indegree is 1 and the edge going in is not a loop
-                if *bid_from != arg.bid && indegrees.get(&arg.bid) == Some(&1) && !removed_bids.contains(bid_from) {
+                if *bid_from != arg.bid
+                    && indegrees.get(&arg.bid) == Some(&1)
+                    && !removed_bids.contains(bid_from)
+                {
                     let bid_to = arg.bid;
                     let block_to = code.blocks.get_mut(&bid_to);
                     let block_to = if let Some(block_to) = block_to {
@@ -152,8 +153,7 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
                                 replace_operand(operand, &replaces)
                             });
 
-                            *named_instr =
-                                Named::new(named_instr_clone.name().map(|s| s.clone()), instr);
+                            *named_instr = Named::new(named_instr_clone.name().cloned(), instr);
                         }
 
                         block.exit = replace_operands_in_exit(block.exit.clone(), |operand| {
@@ -399,10 +399,7 @@ where
 
 fn replace_operand(operand: Operand, replaces: &HashMap<RegisterId, Operand>) -> Operand {
     match operand.clone() {
-        Operand::Register { rid, .. } => replaces
-            .get(&rid)
-            .map(|operand| operand.clone())
-            .unwrap_or(operand),
+        Operand::Register { rid, .. } => replaces.get(&rid).cloned().unwrap_or(operand),
         _ => operand,
     }
 }

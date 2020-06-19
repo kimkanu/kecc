@@ -1,9 +1,7 @@
 use crate::ir::*;
-use crate::opt::opt_utils::*;
 use crate::opt::FunctionPass;
 use crate::*;
-use lang_c::ast;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::ops::DerefMut;
 
@@ -336,7 +334,7 @@ fn mark_used(operand: &Operand, uses: &mut HashSet<RegisterId>) -> bool {
         Operand::Constant { .. } => true,
         Operand::Register { rid, .. } => match rid {
             RegisterId::Temp { .. } => uses.insert(rid),
-            RegisterId::Local { aid } => uses.insert(rid),
+            RegisterId::Local { .. } => uses.insert(rid),
             _ => true,
         },
     }

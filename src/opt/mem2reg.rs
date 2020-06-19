@@ -2,7 +2,7 @@ use crate::ir::*;
 use crate::opt::opt_utils::*;
 use crate::opt::FunctionPass;
 use crate::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::ops::DerefMut;
 pub type Mem2reg = FunctionPass<Mem2regInner>;
@@ -155,11 +155,11 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                                 &reverse_cfg,
                                 &(*aid, *bid),
                             )
-                            .unwrap_or(OperandVar::Operand(
-                                Operand::constant(Constant::undef(
+                            .unwrap_or_else(|| {
+                                OperandVar::Operand(Operand::constant(Constant::undef(
                                     ptr.dtype().get_pointer_inner().unwrap().clone(),
-                                )),
-                            ));
+                                )))
+                            });
                             replaces.insert(RegisterId::Temp { bid: *bid, iid }, var);
                         }
                     }
@@ -198,9 +198,9 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                             &reverse_cfg,
                             &(*aid, *bid_from),
                         )
-                        .unwrap_or(OperandVar::Operand(Operand::constant(Constant::undef(
-                            dtype.clone(),
-                        ))));
+                        .unwrap_or_else(|| {
+                            OperandVar::Operand(Operand::constant(Constant::undef(dtype.clone())))
+                        });
 
                         let value = value.lookup(&dtype, &phinode_indices);
 
@@ -261,12 +261,12 @@ fn get_mut_from_current_values(
         .map(|s| s.contains(&key.1))
         .unwrap_or(false)
     {
-        phinode_positions.push(key.clone());
-        let current_value = OperandVar::Phi(key.clone());
-        current_values.insert(key.clone(), current_value.clone());
+        phinode_positions.push(*key);
+        let current_value = OperandVar::Phi(*key);
+        current_values.insert(*key, current_value.clone());
 
         for (bid_prev, _) in reverse_cfg.get(&key.1).unwrap().iter() {
-            if let None = end_values.get(&(key.0, *bid_prev)) {
+            if end_values.get(&(key.0, *bid_prev)).is_none() {
                 let _ = get_mut_from_current_values(
                     current_values,
                     end_values,
@@ -280,20 +280,18 @@ fn get_mut_from_current_values(
         }
 
         Some(current_value)
+    } else if let Some(bid_idom) = domtree.idom(key.1) {
+        get_mut_from_current_values(
+            current_values,
+            end_values,
+            domtree,
+            joins,
+            phinode_positions,
+            reverse_cfg,
+            &(key.0, bid_idom),
+        )
     } else {
-        if let Some(bid_idom) = domtree.idom(key.1) {
-            get_mut_from_current_values(
-                current_values,
-                end_values,
-                domtree,
-                joins,
-                phinode_positions,
-                reverse_cfg,
-                &(key.0, bid_idom),
-            )
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -301,36 +299,30 @@ fn get_from_current_values(
     current_values: &HashMap<(usize, BlockId), OperandVar>,
     domtree: &Domtree,
     joins: &HashMap<usize, HashSet<BlockId>>,
-    phinode_positions: &Vec<(usize, BlockId)>,
+    phinode_positions: &[(usize, BlockId)],
     reverse_cfg: &ReverseCFG,
     key: &(usize, BlockId),
 ) -> Option<OperandVar> {
     if let Some(value) = current_values.get(key) {
         Some(value.clone())
+    } else if let Some(bid_idom) = domtree.idom(key.1) {
+        get_from_current_values(
+            current_values,
+            domtree,
+            joins,
+            phinode_positions,
+            reverse_cfg,
+            &(key.0, bid_idom),
+        )
     } else {
-        if let Some(bid_idom) = domtree.idom(key.1) {
-            get_from_current_values(
-                current_values,
-                domtree,
-                joins,
-                phinode_positions,
-                reverse_cfg,
-                &(key.0, bid_idom),
-            )
-        } else {
-            None
-        }
+        None
     }
 }
 
-fn mark_inpromotable(inpromotable: &mut HashSet<usize>, operand: &Operand) -> () {
-    match operand.clone() {
-        Operand::Register { rid, .. } => match rid {
-            RegisterId::Local { aid } => {
-                inpromotable.insert(aid);
-            }
-            _ => {}
-        },
-        _ => {}
+fn mark_inpromotable(inpromotable: &mut HashSet<usize>, operand: &Operand) {
+    if let Operand::Register { rid, .. } = operand.clone() {
+        if let RegisterId::Local { aid } = rid {
+            inpromotable.insert(aid);
+        }
     }
 }

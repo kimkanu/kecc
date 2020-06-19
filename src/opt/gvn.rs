@@ -3,9 +3,8 @@ use crate::opt::opt_utils::*;
 use crate::opt::FunctionPass;
 use crate::*;
 use lang_c::ast;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use std::ops::DerefMut;
 
 pub type Gvn = FunctionPass<GvnInner>;
 
@@ -26,9 +25,9 @@ impl ConstantNum {
         operand: &Operand,
         register_table: &mut HashMap<RegisterId, ConstantNum>,
     ) -> Self {
-        match &operand {
-            &Operand::Constant(constant) => Self::Constant(constant.clone()),
-            &Operand::Register { rid, .. } => {
+        match operand {
+            Operand::Constant(constant) => Self::Constant(constant.clone()),
+            Operand::Register { rid, .. } => {
                 let len = register_table.len();
                 if let Some(obtained) = register_table.get(&rid) {
                     obtained.clone()
@@ -75,28 +74,21 @@ fn get_from_leader_table(
 ) -> Option<Operand> {
     if let Some(operand) = leader_table.get(key) {
         Some(operand.clone())
+    } else if key.1 != 0 {
+        get_from_leader_table(&(key.0, key.1 - 1, key.2), leader_table, domtree, code)
+    } else if let Some(bid_idom) = domtree.idom(key.0) {
+        get_from_leader_table(
+            &(
+                bid_idom,
+                code.blocks.get(&bid_idom).unwrap().instructions.len(),
+                key.2,
+            ),
+            leader_table,
+            domtree,
+            code,
+        )
     } else {
-        if key.1 != 0 {
-            get_from_leader_table(
-                &(key.0, key.1 - 1, key.2.clone()),
-                leader_table,
-                domtree,
-                code,
-            )
-        } else if let Some(bid_idom) = domtree.idom(key.0) {
-            get_from_leader_table(
-                &(
-                    bid_idom,
-                    code.blocks.get(&bid_idom).unwrap().instructions.len(),
-                    key.2.clone(),
-                ),
-                leader_table,
-                domtree,
-                code,
-            )
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -133,7 +125,7 @@ impl Optimize<ir::FunctionDefinition> for GvnInner {
                     .iter()
                     .map(|(_, arg)| arg.args.get(pid).unwrap().get_register())
                     .collect();
-                if registers.len() == 0 {
+                if registers.is_empty() {
                     register_table.insert(
                         RegisterId::arg(*bid, pid),
                         ConstantNum::Num(Num::Num(register_table.len())),
@@ -171,10 +163,7 @@ impl Optimize<ir::FunctionDefinition> for GvnInner {
                 register_table.insert(RegisterId::arg(*bid, pid), num);
             }
 
-            let predecessors = reverse_cfg
-                .get(bid)
-                .map(|x| x.clone())
-                .unwrap_or(Vec::new());
+            let predecessors = reverse_cfg.get(bid).cloned().unwrap_or_default();
 
             // traverse the phinodes
             for (pid, phinode) in block.phinodes.iter().enumerate() {
@@ -198,7 +187,7 @@ impl Optimize<ir::FunctionDefinition> for GvnInner {
                     continue;
                 }
 
-                if predecessors.len() > 0 {
+                if !predecessors.is_empty() {
                     // If [LT@B_final(Ⓝ) exists for all predecessor B of %i’s block],
                     let bids: Vec<_> = predecessors.iter().map(|(bid_pred, _)| *bid_pred).collect();
                     // - predecessor B should have been traversed
@@ -217,8 +206,7 @@ impl Optimize<ir::FunctionDefinition> for GvnInner {
                         let pred_block = code.blocks.get(bid_pred).unwrap();
                         pred_block.clone().exit.walk_jump_args(|arg| {
                             if *bid == arg.bid {
-                                pred_leader_values
-                                    .push((*bid_pred, arg.args.get(pid).map(|s| s.clone())));
+                                pred_leader_values.push((*bid_pred, arg.args.get(pid).cloned()));
                             }
                         });
                     }
@@ -405,11 +393,8 @@ impl Optimize<ir::FunctionDefinition> for GvnInner {
                     continue;
                 }
 
-                let predecessors = reverse_cfg
-                    .get(bid)
-                    .map(|x| x.clone())
-                    .unwrap_or(Vec::new());
-                if predecessors.len() > 0 {
+                let predecessors = reverse_cfg.get(bid).cloned().unwrap_or_default();
+                if !predecessors.is_empty() {
                     // If [LT@B_final(Ⓝ) exists for all predecessor B of %i’s block],
                     let bids: Vec<_> = predecessors.iter().map(|(bid_pred, _)| *bid_pred).collect();
                     // - predecessor B should have been traversed
