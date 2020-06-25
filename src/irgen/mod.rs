@@ -221,11 +221,39 @@ impl Irgen {
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| IrgenError::new(code.clone(), IrgenErrorMessage::invalid_dtype(e)))?;
 
-        let mut tempid: usize = 0;
+        let mut tempid = 0;
+        loop {
+            if self.structs.contains_key(&format!("%t{}", tempid)) {
+                if self
+                    .structs
+                    .get(&format!("%t{}", tempid))
+                    .unwrap()
+                    .clone()
+                    .is_some()
+                {
+                    tempid += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
         let _ = base_dtype
             .clone()
             .resolve_typedefs(&self.typedefs, &self.structs)
-            .and_then(|dtype| dtype.resolve_structs(&mut self.structs, &mut tempid))
+            .and_then(|dtype| {
+                let fields = dtype.get_struct_fields();
+                if let Some(fields) = fields {
+                    let fields = fields.clone();
+                    if fields.is_some() {
+                        dtype.resolve_structs(&mut self.structs, &mut tempid)
+                    } else {
+                        Ok(dtype)
+                    }
+                } else {
+                    dtype.resolve_structs(&mut self.structs, &mut tempid)
+                }
+            })
             .map_err(|e| IrgenError::new(code.clone(), IrgenErrorMessage::invalid_dtype(e)))?;
 
         // loop over declarators
@@ -244,7 +272,19 @@ impl Irgen {
                         .clone()
                         .resolve_typedefs(&self.typedefs, &self.structs)
                 })
-                .and_then(|dtype| dtype.resolve_structs(&mut self.structs, &mut tempid))
+                .and_then(|dtype| {
+                    let fields = dtype.get_struct_fields();
+                    if let Some(fields) = fields {
+                        let fields = fields.clone();
+                        if fields.is_some() {
+                            dtype.resolve_structs(&mut self.structs, &mut tempid)
+                        } else {
+                            Ok(dtype)
+                        }
+                    } else {
+                        dtype.resolve_structs(&mut self.structs, &mut tempid)
+                    }
+                })
                 .map_err(|e| IrgenError::new(code.clone(), IrgenErrorMessage::invalid_dtype(e)))?;
 
             let declarator_name = Helper::declarator_name(declarator);
@@ -255,11 +295,11 @@ impl Irgen {
                 let prev_dtype = self
                     .typedefs
                     .entry(declarator_name.clone())
-                    .or_insert(dtype.clone());
+                    .or_insert_with(|| dtype.clone());
 
                 if prev_dtype != &dtype {
                     let e = IrgenError::new(
-                        code.clone(),
+                        code,
                         IrgenErrorMessage::conflicting_dtype(dtype, prev_dtype.clone()),
                     );
                     return Err(e);
@@ -278,7 +318,7 @@ impl Irgen {
                     ir::Declaration::Variable { initializer, .. } => {
                         if initializer.is_some() {
                             return Err(IrgenError::new(
-                                code.clone(),
+                                code,
                                 IrgenErrorMessage::redefinition(declarator_name),
                             ));
                         }
@@ -286,7 +326,7 @@ impl Irgen {
                     }
                     ir::Declaration::Function { .. } => {
                         return Err(IrgenError::new(
-                            code.clone(),
+                            code,
                             IrgenErrorMessage::function_initialization(declarator_name),
                         ));
                     }
@@ -315,12 +355,27 @@ impl Irgen {
 
         if is_typedef {
             return Err(IrgenError {
-                code: code.clone(),
+                code,
                 message: IrgenErrorMessage::misc("typedef to a function defition"),
             });
         }
 
         let mut tempid = 0;
+        loop {
+            if self.structs.contains_key(&format!("%t{}", tempid)) {
+                if self
+                    .structs
+                    .get(&format!("%t{}", tempid))
+                    .unwrap()
+                    .clone()
+                    .is_some()
+                {
+                    tempid += 1;
+                }
+            } else {
+                break;
+            }
+        }
 
         let dtype = base_dtype
             .with_ast_declarator(declarator)
@@ -330,7 +385,19 @@ impl Irgen {
                     .clone()
                     .resolve_typedefs(&self.typedefs, &self.structs)
             })
-            .and_then(|dtype| dtype.resolve_structs(&mut self.structs, &mut tempid))
+            .and_then(|dtype| {
+                let fields = dtype.get_struct_fields();
+                if let Some(fields) = fields {
+                    let fields = fields.clone();
+                    if fields.is_some() {
+                        dtype.resolve_structs(&mut self.structs, &mut tempid)
+                    } else {
+                        Ok(dtype)
+                    }
+                } else {
+                    dtype.resolve_structs(&mut self.structs, &mut tempid)
+                }
+            })
             .map_err(|e| IrgenError::new(code.clone(), IrgenErrorMessage::invalid_dtype(e)))?;
         let signature = ir::FunctionSignature::new(dtype.clone());
 
@@ -372,16 +439,6 @@ impl Irgen {
 
         irgen.translate_statement(&source.statement.node, &mut context, None, None)?;
 
-        // add phinodes for the function parameters
-        for (dtype, var) in izip!(&signature.params, params_name) {
-            irgen
-                .blocks
-                .get_mut(&bid_init)
-                .unwrap()
-                .phinodes
-                .push(Named::new(Some(var.clone()), dtype.clone()));
-        }
-
         // end block
         let ret = signature.ret.set_const(false);
         let value = if ret == Dtype::unit() {
@@ -400,6 +457,16 @@ impl Irgen {
         irgen.commit_block(context, ir::BlockExit::Return { value });
         irgen.exit_scope();
 
+        // add phinodes for the function parameters
+        for (dtype, var) in izip!(&signature.params, params_name) {
+            irgen
+                .blocks
+                .get_mut(&bid_init)
+                .unwrap()
+                .phinodes
+                .push(Named::new(Some(var.clone()), dtype.clone()));
+        }
+
         let func_def = ir::FunctionDefinition {
             allocations: irgen.allocations,
             blocks: irgen.blocks,
@@ -409,13 +476,13 @@ impl Irgen {
         let decl = if let Some(decl) = self.decls.get_mut(&name) {
             decl
         } else {
-            return Err(IrgenError::new(code.clone(), IrgenErrorMessage::misc("hi")));
+            return Err(IrgenError::new(code, IrgenErrorMessage::misc("hi")));
         };
 
         if let ir::Declaration::Function { definition, .. } = decl {
             if definition.is_some() {
                 return Err(IrgenError::new(
-                    code.clone(),
+                    code,
                     IrgenErrorMessage::misc(format!("`{}` is defined multiple times", name)),
                 ));
             }
@@ -423,7 +490,7 @@ impl Irgen {
             *definition = Some(func_def);
         } else {
             return Err(IrgenError::new(
-                code.clone(),
+                code,
                 IrgenErrorMessage::misc(format!("`{}` should be a FunctionDefinition", name)),
             ));
         }
@@ -498,7 +565,7 @@ impl Helper {
 /// Type Casting
 impl Helper {
     fn merge_dtype(lhs: Dtype, rhs: Dtype) -> Result<Dtype, IrgenErrorMessage> {
-        if &lhs == &rhs {
+        if lhs == rhs {
             return Ok(lhs);
         }
 
@@ -507,12 +574,12 @@ impl Helper {
         }
 
         // If one of the operands is double, the other becomes double.
-        if &lhs == &Dtype::DOUBLE || &rhs == &Dtype::DOUBLE {
+        if lhs == Dtype::DOUBLE || rhs == Dtype::DOUBLE {
             return Ok(Dtype::DOUBLE);
         }
 
         // If one of the operands is float, the other becomes float.
-        if &lhs == &Dtype::FLOAT || &rhs == &Dtype::FLOAT {
+        if lhs == Dtype::FLOAT || rhs == Dtype::FLOAT {
             return Ok(Dtype::FLOAT);
         }
 
@@ -520,7 +587,7 @@ impl Helper {
         let rhs = Self::integer_promotion(rhs);
 
         // If both have the same type, no more conversion is needed.
-        if &lhs == &rhs {
+        if lhs == rhs {
             return Ok(lhs);
         }
 
@@ -551,18 +618,18 @@ impl Helper {
                 }
 
                 // If the width of the unsigned operand is longer than or equal to the width of the signed operand, then the signed operand is converted to the type of the unsigned operand.
-                if lhs_is_signed == false && lhs_width >= rhs_width {
+                if !lhs_is_signed && lhs_width >= rhs_width {
                     return Ok(lhs);
                 }
-                if rhs_is_signed == false && lhs_width <= rhs_width {
+                if !rhs_is_signed && lhs_width <= rhs_width {
                     return Ok(rhs);
                 }
 
                 // If the width of the signed operand is longer than the width of the unsigned operand, then the unsigned operand is converted to the type of the signed operand.
-                if lhs_is_signed == true {
+                if lhs_is_signed {
                     return Ok(lhs);
                 }
-                if rhs_is_signed == true {
+                if rhs_is_signed {
                     return Ok(rhs);
                 }
 
@@ -592,15 +659,16 @@ impl Helper {
     }
 
     fn is_number_dtype(dtype: &Dtype) -> bool {
-        match dtype {
-            &Dtype::Int { .. } => true,
-            &Dtype::Float { .. } => true,
+        match *dtype {
+            Dtype::Int { .. } => true,
+            Dtype::Float { .. } => true,
             _ => false,
         }
     }
 }
 
 /// An irgen for a function
+#[derive(Debug)]
 pub struct IrgenFunc {
     return_type: Dtype,
     allocations: Vec<Named<Dtype>>,
@@ -640,9 +708,9 @@ impl IrgenFunc {
             top_layer.entry(var).or_insert_with(|| ptr.clone());
             Ok(())
         } else {
-            return Err(IrgenErrorMessage::Misc {
+            Err(IrgenErrorMessage::Misc {
                 message: "empty symbol table".to_string(),
-            });
+            })
         }
     }
 
@@ -675,7 +743,7 @@ impl IrgenFunc {
         Ok(ptr)
     }
 
-    fn lookup_symbol_table(&mut self, name: &String) -> Result<ir::Operand, IrgenErrorMessage> {
+    fn lookup_symbol_table(&mut self, name: &str) -> Result<ir::Operand, IrgenErrorMessage> {
         for layer in self.symbol_table.iter().rev() {
             if let Some(ptr) = layer.get(name) {
                 return Ok(ptr.clone());
@@ -871,8 +939,8 @@ impl IrgenFunc {
 
     fn find_struct_field(
         &self,
-        struct_name: &String,
-        field_name: &String,
+        struct_name: &str,
+        field_name: &str,
         offset: usize,
     ) -> Result<(Dtype, usize), IrgenErrorMessage> {
         let struct_dtype = self
@@ -959,7 +1027,7 @@ impl IrgenFunc {
                             offset as u128,
                             ir::Dtype::LONG,
                         )),
-                        dtype: Box::new(Dtype::pointer(struct_field.clone())),
+                        dtype: Box::new(Dtype::pointer(struct_field)),
                     })
                 }
                 MemberOperator::Indirect => {
@@ -972,7 +1040,7 @@ impl IrgenFunc {
                     let _ = ptr
                         .dtype()
                         .resolve_structs(&mut self.structs, &mut self.tempid_counter)
-                        .map_err(|e| IrgenErrorMessage::invalid_dtype(e))?;
+                        .map_err(IrgenErrorMessage::invalid_dtype)?;
 
                     let (struct_field, offset) =
                         self.find_struct_field(&struct_name, field_name, 0)?;
@@ -1090,7 +1158,7 @@ impl IrgenFunc {
             return Ok(value);
         }
 
-        match value.clone() {
+        match value {
             ir::Operand::Constant(_) => {
                 // todo: check for the compatibility
                 context.insert_instruction(ir::Instruction::TypeCast {
@@ -1140,7 +1208,7 @@ impl IrgenFunc {
                         context.insert_instruction(ir::Instruction::BinOp {
                             op: BinaryOperator::NotEquals,
                             lhs: value,
-                            rhs: ir::Operand::constant(ir::Constant::int(0, dtype.clone())),
+                            rhs: ir::Operand::constant(ir::Constant::int(0, dtype)),
                             dtype: Dtype::BOOL,
                         })
                     }
@@ -1366,7 +1434,7 @@ impl IrgenFunc {
                 let dtype = prev_rval.dtype();
                 let new_rval = self.translate_binary_op_with_operands(
                     BinaryOperator::Plus,
-                    prev_rval.clone(),
+                    prev_rval,
                     ir::Operand::constant(ir::Constant::int(1, dtype)),
                     context,
                 )?;
@@ -1378,11 +1446,22 @@ impl IrgenFunc {
                 let dtype = prev_rval.dtype();
                 let new_rval = self.translate_binary_op_with_operands(
                     BinaryOperator::Minus,
-                    prev_rval.clone(),
+                    prev_rval,
                     ir::Operand::constant(ir::Constant::int(1, dtype)),
                     context,
                 )?;
                 self.translate_assign(lval, new_rval, context)
+            }
+            UnaryOperator::Plus => {
+                let rval = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let dtype = rval.dtype();
+                let dtype = Helper::integer_promotion(dtype);
+                let rval = self.translate_typecast(rval, dtype.clone(), context)?;
+                context.insert_instruction(ir::Instruction::UnaryOp {
+                    op: unary.operator.node.clone(),
+                    operand: rval,
+                    dtype,
+                })
             }
             UnaryOperator::Minus => {
                 let rval = self.translate_expr_rvalue(&unary.operand.node, context)?;
@@ -1411,7 +1490,32 @@ impl IrgenFunc {
                 ptr.dtype().set_const(false);
                 context.insert_instruction(ir::Instruction::Load { ptr })
             }
-            _ => todo!("translate_unary_op"),
+            UnaryOperator::Complement => {
+                let rval = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let dtype = rval.dtype();
+                let dtype = Helper::integer_promotion(dtype);
+                let rval = self.translate_typecast(rval, dtype.clone(), context)?;
+                let negative_one = context.insert_instruction(ir::Instruction::UnaryOp {
+                    op: UnaryOperator::Minus,
+                    operand: ir::Operand::constant(ir::Constant::int(1, dtype.clone())),
+                    dtype: dtype.clone(),
+                })?;
+                context.insert_instruction(ir::Instruction::BinOp {
+                    op: BinaryOperator::BitwiseXor,
+                    lhs: rval,
+                    rhs: negative_one,
+                    dtype,
+                })
+            }
+            UnaryOperator::SizeOf => {
+                let rval = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let dtype = rval.dtype();
+                let size_of = self.size_of(&dtype)?;
+                Ok(ir::Operand::constant(ir::Constant::int(
+                    size_of as u128,
+                    Dtype::LONG,
+                )))
+            }
         }
     }
     fn translate_binary_op(
@@ -1590,19 +1694,30 @@ impl IrgenFunc {
                     })
                 }
                 BinaryOperator::Minus => todo!(""),
+                BinaryOperator::Equals => {
+                    let rhs = self.translate_typecast(val_rhs, val_lhs.dtype(), context)?;
+                    context.insert_instruction(ir::Instruction::BinOp {
+                        op: BinaryOperator::Equals,
+                        lhs: val_lhs.clone(),
+                        rhs,
+                        dtype: val_lhs.dtype(),
+                    })
+                }
                 _ => Err(IrgenErrorMessage::misc(
                     "strange pointer arithmetic with int",
                 )),
             },
-            (Dtype::Int { .. }, Dtype::Pointer { .. }) => {
-                if op == BinaryOperator::Plus {
+            (Dtype::Int { .. }, Dtype::Pointer { .. }) => match op {
+                BinaryOperator::Plus => {
                     self.translate_binary_op_with_operands(op, val_rhs, val_lhs, context)
-                } else {
-                    Err(IrgenErrorMessage::misc(
-                        "strange pointer arithmetic with int",
-                    ))
                 }
-            }
+                BinaryOperator::Equals => {
+                    self.translate_binary_op_with_operands(op, val_rhs, val_lhs, context)
+                }
+                _ => Err(IrgenErrorMessage::misc(
+                    "strange pointer arithmetic with int",
+                )),
+            },
             _ => Err(IrgenErrorMessage::misc("strange arithmetic")),
         }
     }
@@ -1778,7 +1893,7 @@ impl IrgenFunc {
         )?;
 
         context.insert_instruction(ir::Instruction::GetElementPtr {
-            ptr: lhs.clone(),
+            ptr: lhs,
             offset,
             dtype: Box::new(Dtype::pointer(array_inner.clone())),
         })
@@ -1977,7 +2092,7 @@ impl IrgenFunc {
                     dtype.resolve_structs(&mut self.structs, &mut self.tempid_counter)
                 })
                 .and_then(|dtype| dtype.resolve_typedefs(&self.typedefs, &self.structs))
-                .map_err(|e| IrgenErrorMessage::invalid_dtype(e))?;
+                .map_err(IrgenErrorMessage::invalid_dtype)?;
 
             let name = Helper::declarator_name(declarator);
 
@@ -2020,9 +2135,9 @@ impl IrgenFunc {
                     });
                     Ok(ptr)
                 } else {
-                    return Err(IrgenErrorMessage::misc(
+                    Err(IrgenErrorMessage::misc(
                         "int|float|pointer: incompatible initializer",
-                    ));
+                    ))
                 }
             }
             Dtype::Array { inner, .. } => {
@@ -2081,20 +2196,20 @@ impl IrgenFunc {
                         let _ = ptr_inner
                             .clone()
                             .resolve_structs(&mut self.structs, &mut self.tempid_counter)
-                            .map_err(|e| IrgenErrorMessage::invalid_dtype(e))?;
+                            .map_err(IrgenErrorMessage::invalid_dtype)?;
                         let struct_dtype =
                             self.structs.get(&name.unwrap()).unwrap().clone().unwrap();
                         let (fields, size_align_offsets) = if let Dtype::Struct {
                             fields,
                             size_align_offsets,
                             ..
-                        } = struct_dtype.clone()
+                        } = struct_dtype
                         {
                             (fields, size_align_offsets)
                         } else {
                             return Err(IrgenErrorMessage::misc("incompatible initializer"));
                         };
-                        if list.len() == 0 {
+                        if list.is_empty() {
                             return Ok(ptr);
                         }
 
@@ -2127,7 +2242,7 @@ impl IrgenFunc {
         &mut self,
         signature: &ir::FunctionSignature,
         bid_init: ir::BlockId,
-        params_name: &Vec<String>,
+        params_name: &[String],
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
         if signature.params.len() != params_name.len() {

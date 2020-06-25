@@ -935,15 +935,12 @@ impl WriteString for Float {
 impl WriteString for FloatSuffix {
     fn write_string(&self) -> String {
         assert_eq!(false, self.imaginary);
-        format!(
-            "{}",
-            match self.format {
-                FloatFormat::Float => "f",
-                FloatFormat::Double => "",
-                FloatFormat::LongDouble => "l",
-                FloatFormat::TS18661Format(_) => panic!("TS18861"),
-            }
-        )
+        match self.format {
+            FloatFormat::Float => "f".to_string(),
+            FloatFormat::Double => "".to_string(),
+            FloatFormat::LongDouble => "l".to_string(),
+            FloatFormat::TS18661Format(_) => panic!("TS18861"),
+        }
     }
 }
 
