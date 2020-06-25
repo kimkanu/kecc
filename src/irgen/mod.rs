@@ -10,7 +10,6 @@ use lang_c::ast::*;
 use lang_c::span::Node;
 
 use crate::ir::{Dtype, DtypeError, HasDtype, Named};
-use crate::write_base::WriteString;
 use crate::*;
 
 use itertools::izip;
@@ -215,7 +214,7 @@ impl Translate<TranslationUnit> for Irgen {
 
 impl Irgen {
     fn add_declaration(&mut self, source: &Declaration) -> Result<(), IrgenError> {
-        let code = source.write_string();
+        let code = format!("{:?}", source);
 
         // get the base dtype from its specifiers and if it is a typedef
         let specifiers = &source.specifiers;
@@ -308,8 +307,7 @@ impl Irgen {
 
         let code = format!(
             "specifiers: {:?},\ndeclarator: {:?}",
-            specifiers.write_string(),
-            declarator.write_string()
+            specifiers, declarator,
         );
 
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(specifiers)
@@ -1043,8 +1041,8 @@ impl IrgenFunc {
         if args.len() != parameters.len() {
             return Err(IrgenErrorMessage::Misc {
                 message: format!(
-                    "too few or too many arguments to the function `{}`",
-                    callee.write_string()
+                    "too few or too many arguments to the function `{:?}`",
+                    callee
                 ),
             });
         }
@@ -1845,7 +1843,7 @@ impl IrgenFunc {
         if let Some(case) = case {
             if !case.is_integer_constant() {
                 return Err(IrgenError {
-                    code: label_statement.label.write_string(),
+                    code: format!("{:?}", label_statement.label),
                     message: IrgenErrorMessage::Misc {
                         message: "expression is not an integer constant expression".to_string(),
                     },
@@ -1854,7 +1852,7 @@ impl IrgenFunc {
 
             if cases.iter().any(|(c, _)| &case == c) {
                 return Err(IrgenError {
-                    code: label_statement.label.write_string(),
+                    code: format!("{:?}", label_statement.label),
                     message: IrgenErrorMessage::Misc {
                         message: "duplicated case value".to_string(),
                     },
@@ -1866,7 +1864,7 @@ impl IrgenFunc {
             // "default" is previously assigned
             if default.is_some() {
                 return Err(IrgenError {
-                    code: label_statement.label.write_string(),
+                    code: format!("{:?}", label_statement.label),
                     message: IrgenErrorMessage::Misc {
                         message: "previously defined default".to_string(),
                     },
@@ -1889,7 +1887,7 @@ impl IrgenFunc {
             Label::Identifier(_) => panic!("Label::Identifier"),
             Label::Case(expr) => {
                 let constant = ir::Constant::try_from(&expr.node).map_err(|_| IrgenError {
-                    code: expr.write_string(),
+                    code: format!("{:?}", expr),
                     message: IrgenErrorMessage::Misc {
                         message: "case label does not reduce to an integer constant".to_string(),
                     },
@@ -1918,7 +1916,7 @@ impl IrgenFunc {
                 BlockItem::Declaration(decl) => {
                     self.translate_decl(&decl.node, &mut context)
                         .map_err(|e| IrgenError {
-                            code: decl.write_string(),
+                            code: format!("{:?}", decl),
                             message: e,
                         })?;
                 }
@@ -2163,7 +2161,7 @@ impl IrgenFunc {
                         BlockItem::Declaration(decl) => {
                             self.translate_decl(&decl.node, context)
                                 .map_err(|e| IrgenError {
-                                    code: decl.write_string(),
+                                    code: format!("{:?}", decl),
                                     message: IrgenErrorMessage::Misc {
                                         message: e.to_string(),
                                     },
@@ -2179,7 +2177,7 @@ impl IrgenFunc {
                         }
                         _ => {
                             return Err(IrgenError::new(
-                                statement.write_string(),
+                                format!("{:?}", statement),
                                 IrgenErrorMessage::misc("static_assert"),
                             ));
                         }
@@ -2194,7 +2192,7 @@ impl IrgenFunc {
                     let _ = self
                         .translate_expr_rvalue(&expr.node, context)
                         .map_err(|e| IrgenError {
-                            code: expr.write_string(),
+                            code: format!("{:?}", expr),
                             message: e,
                         })?;
                 }
@@ -2213,7 +2211,7 @@ impl IrgenFunc {
                     bid_else,
                 )
                 .map_err(|e| IrgenError {
-                    code: statement.write_string(),
+                    code: format!("{:?}", statement),
                     message: IrgenErrorMessage::Misc {
                         message: e.to_string(),
                     },
@@ -2257,7 +2255,7 @@ impl IrgenFunc {
                     Some(expr) => self
                         .translate_expr_rvalue(&expr.node, context)
                         .map_err(|e| IrgenError {
-                            code: expr.write_string(),
+                            code: format!("{:?}", expr),
                             message: IrgenErrorMessage::Misc {
                                 message: e.to_string(),
                             },
@@ -2268,7 +2266,7 @@ impl IrgenFunc {
                 let value = self
                     .translate_typecast(value, self.return_type.clone(), context)
                     .map_err(|e| IrgenError {
-                        code: expr.write_string(),
+                        code: format!("{:?}", expr),
                         message: e,
                     })?;
 
@@ -2295,7 +2293,7 @@ impl IrgenFunc {
                 self.enter_scope();
                 self.translate_for_initializer(&for_statement.initializer.node, context)
                     .map_err(|e| IrgenError {
-                        code: for_statement.initializer.write_string(),
+                        code: format!("{:?}", for_statement.initializer),
                         message: e,
                     })?;
 
@@ -2317,7 +2315,7 @@ impl IrgenFunc {
                     bid_end,
                 )
                 .map_err(|e| IrgenError {
-                    code: for_statement.condition.write_string(),
+                    code: format!("{:?}", for_statement.condition),
                     message: e,
                 })?;
 
@@ -2347,7 +2345,7 @@ impl IrgenFunc {
                     let _ = self
                         .translate_expr_rvalue(&step_expr.node, &mut context_step)
                         .map_err(|e| IrgenError {
-                            code: for_statement.step.write_string(),
+                            code: format!("{:?}", for_statement.step),
                             message: e,
                         });
                 }
@@ -2383,7 +2381,7 @@ impl IrgenFunc {
                     bid_end,
                 )
                 .map_err(|e| IrgenError {
-                    code: while_statement.expression.write_string(),
+                    code: format!("{:?}", while_statement.expression),
                     message: e,
                 })?;
 
@@ -2446,7 +2444,7 @@ impl IrgenFunc {
                     bid_end,
                 )
                 .map_err(|e| IrgenError {
-                    code: do_while_statement.expression.write_string(),
+                    code: format!("{:?}", do_while_statement.expression),
                     message: e,
                 })?;
 
@@ -2457,7 +2455,7 @@ impl IrgenFunc {
                 let value = self
                     .translate_expr_rvalue(&switch_statement.node.expression.node, context)
                     .map_err(|e| IrgenError {
-                        code: switch_statement.node.expression.write_string(),
+                        code: format!("{:?}", switch_statement.node.expression),
                         message: e,
                     })?;
 
@@ -2510,7 +2508,7 @@ impl IrgenFunc {
                 Ok(())
             }
             Statement::Labeled(labeled_statement) => Err(IrgenError {
-                code: labeled_statement.node.label.write_string(),
+                code: format!("{:?}", labeled_statement.node.label),
                 message: IrgenErrorMessage::Misc {
                     message: "label statement not within a switch".to_string(),
                 },
