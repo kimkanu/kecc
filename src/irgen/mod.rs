@@ -1125,23 +1125,7 @@ impl IrgenFunc {
 
         // type casting arguments to make it match with the target parameter types
         let args = izip!(args, parameters)
-            .map(|(a, p)| {
-                // // array case
-                // let a = if let Dtype::Pointer { inner, .. } = a.dtype() {
-                //     if let Dtype::Array { inner, .. } = inner.deref() {
-                //         context.insert_instruction(ir::Instruction::GetElementPtr {
-                //             ptr: a,
-                //             offset: ir::Operand::constant(ir::Constant::int(0, Dtype::INT)),
-                //             dtype: Box::new(Dtype::pointer(inner.deref().clone())),
-                //         })?
-                //     } else {
-                //         a
-                //     }
-                // } else {
-                //     a
-                // };
-                self.translate_typecast(a, p.clone(), context)
-            })
+            .map(|(a, p)| self.translate_typecast(a, p.clone(), context))
             .collect::<Result<Vec<_>, _>>()?;
 
         let return_type = return_type.clone().set_const(false);
