@@ -1,0 +1,4 @@
+/bench
+/bench-gcc
+*.o
+*.s

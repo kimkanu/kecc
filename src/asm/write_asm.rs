@@ -87,6 +87,7 @@ impl WriteString for Directive {
             Self::Half(value) => format!(".half\t{:#x?}", value),
             Self::Word(value) => format!(".word\t{:#x?}", value),
             Self::Quad(value) => format!(".quad\t{:#x?}", value),
+            Self::Zero(bytes) => format!(".zero\t{:#x?}", bytes),
         }
     }
 }
@@ -384,6 +385,7 @@ impl WriteString for UType {
 impl WriteString for Pseudo {
     fn write_string(&self) -> String {
         match self {
+            Self::La { rd, symbol } => format!("la\t{},{}", rd.write_string(), symbol.0),
             Self::Li { rd, imm } => format!("li\t{},{}", rd.write_string(), *imm as i64),
             Self::Mv { rd, rs } => format!("mv\t{},{}", rd.write_string(), rs.write_string()),
             Self::Fmv { data_size, rd, rs } => format!(

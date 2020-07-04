@@ -1,3 +1,5 @@
+use lang_c::*;
+use rand::Rng;
 use std::fs::{self, File};
 use std::io::{stderr, Read, Write};
 use std::path::Path;
@@ -6,6 +8,64 @@ use tempfile::tempdir;
 use wait_timeout::ChildExt;
 
 use crate::*;
+
+const NONCE_NAME: &str = "nonce";
+
+fn modify_c(path: &Path, rand_num: i32) -> String {
+    let mut src = File::open(path).expect("`path` must exist");
+    let mut data = String::new();
+    src.read_to_string(&mut data)
+        .expect("`src` must be converted to string");
+    drop(src);
+
+    let from = format!("int {} = 1", NONCE_NAME);
+    let to = format!("int {} = {}", NONCE_NAME, rand_num);
+    data.replace(&from, &to)
+}
+
+fn ast_initializer(number: i32) -> ast::Initializer {
+    let expr = ast::Expression::Constant(Box::new(span::Node::new(
+        ast::Constant::Integer(ast::Integer {
+            base: ast::IntegerBase::Decimal,
+            number: Box::from(&number.to_string() as &str),
+            suffix: ast::IntegerSuffix {
+                size: ast::IntegerSize::Int,
+                unsigned: false,
+                imaginary: false,
+            },
+        }),
+        span::Span::none(),
+    )));
+
+    ast::Initializer::Expression(Box::new(span::Node::new(expr, span::Span::none())))
+}
+
+fn modify_ir(unit: &mut ir::TranslationUnit, rand_num: i32) {
+    for (name, decl) in &mut unit.decls {
+        if name == NONCE_NAME {
+            let (dtype, _) = decl.get_variable().expect("`decl` must be variable");
+            let initializer = ast_initializer(rand_num);
+            let new_decl = ir::Declaration::Variable {
+                dtype: dtype.clone(),
+                initializer: Some(initializer),
+            };
+
+            *decl = new_decl;
+        }
+    }
+}
+
+fn modify_asm(unit: &mut asm::Asm, rand_num: i32) {
+    for variable in &mut unit.unit.variables {
+        let body = &mut variable.body;
+        if body.label == asm::Label(NONCE_NAME.to_string()) {
+            let directive =
+                asm::Directive::try_from_data_size(asm::DataSize::Word, rand_num as u64);
+
+            body.directives = vec![directive];
+        }
+    }
+}
 
 // Rust sets an exit code of 101 when the process panicked.
 // So, we decide KECC sets an exit code of 102 after 101 when the test skipped.
@@ -39,13 +99,26 @@ pub fn test_irgen(path: &Path) {
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
 
-    // Test parse
-    c::Parse::default()
-        .translate(&path)
-        .expect("failed to parse the given program");
+    let mut ir = Irgen::default()
+        .translate(&unit)
+        .unwrap_or_else(|irgen_error| panic!("{}", irgen_error));
 
-    let file_path = path.display().to_string();
-    let bin_path = path.with_extension("irgen").as_path().display().to_string();
+    let rand_num = rand::thread_rng().gen_range(1, 100);
+    let new_c = modify_c(path, rand_num);
+    modify_ir(&mut ir, rand_num);
+
+    // compile recolved c example
+    let temp_dir = tempdir().expect("temp dir creation failed");
+    let temp_file_path = temp_dir.path().join("temp.c");
+    let mut temp_file = File::create(&temp_file_path).unwrap();
+    temp_file.write_all(new_c.as_bytes()).unwrap();
+
+    let file_path = temp_file_path.display().to_string();
+    let bin_path = temp_file_path
+        .with_extension("irgen")
+        .as_path()
+        .display()
+        .to_string();
 
     // Compile c file: If fails, test is vacuously success
     if !Command::new("gcc")
@@ -66,15 +139,10 @@ pub fn test_irgen(path: &Path) {
     }
 
     // Execute compiled executable
-    let mut child = Command::new(fs::canonicalize(bin_path.clone()).unwrap())
+    let mut child = Command::new(fs::canonicalize(bin_path).unwrap())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to execute the compiled executable");
-
-    Command::new("rm")
-        .arg(bin_path)
-        .status()
-        .expect("failed to remove compiled executable");
 
     let status = some_or!(
         child
@@ -100,10 +168,10 @@ pub fn test_irgen(path: &Path) {
     }
 
     let status = some_or_exit!(status.code(), SKIP_TEST);
+    drop(temp_file);
+    temp_dir.close().expect("temp dir deletion failed");
 
-    let ir = Irgen::default()
-        .translate(&unit)
-        .unwrap_or_else(|irgen_error| panic!("{}", irgen_error));
+    // Interpret resolved ir
     let args = Vec::new();
     let result = ir::interp(&ir, args).unwrap_or_else(|interp_error| panic!("{}", interp_error));
     // We only allow main function whose return type is `int`
@@ -217,34 +285,43 @@ pub fn test_opt<P1: AsRef<Path>, P2: AsRef<Path>, O: Optimize<ir::TranslationUni
 pub fn test_asmgen(path: &Path) {
     // Check if the file has .ir extension
     assert_eq!(path.extension(), Some(std::ffi::OsStr::new("ir")));
-    let unit = ir::Parse::default()
+    let mut ir = ir::Parse::default()
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
 
+    // Generate RISC-V assembly from IR
+    let mut asm = Asmgen::default()
+        .translate(&ir)
+        .expect("fail to create riscv assembly code");
+
+    let rand_num = rand::thread_rng().gen_range(1, 100);
+    modify_ir(&mut ir, rand_num);
+    modify_asm(&mut asm, rand_num);
+
     // Execute IR
     let args = Vec::new();
-    let result = ir::interp(&unit, args).unwrap_or_else(|interp_error| panic!("{}", interp_error));
+    let result = ir::interp(&ir, args).unwrap_or_else(|interp_error| panic!("{}", interp_error));
     // We only allow main function whose return type is `int`
     let (value, width, is_signed) = result.get_int().expect("non-integer value occurs");
     assert_eq!(width, 32);
     assert!(is_signed);
 
-    // Generate RISC-V assembly from IR
-    let asm = Asmgen::default()
-        .translate(&unit)
-        .expect("fail to create riscv assembly code");
-    let asm_path = path.with_extension("S").as_path().display().to_string();
-    let mut buffer = File::create(Path::new(&asm_path)).expect("need to success creating file");
-    write(&asm, &mut buffer).unwrap();
-
-    // Link to an RISC-V executable
-    let bin_path = path
+    let temp_dir = tempdir().expect("temp dir creation failed");
+    let asm_path = temp_dir.path().join("temp.S");
+    let asm_path_str = asm_path.as_path().display().to_string();
+    let bin_path_str = asm_path
         .with_extension("asmgen")
         .as_path()
         .display()
         .to_string();
+
+    // Create the assembly code
+    let mut buffer = File::create(asm_path.as_path()).expect("need to success creating file");
+    write(&asm, &mut buffer).unwrap();
+
+    // Compile the assembly code
     if !Command::new("riscv64-linux-gnu-gcc-10")
-        .args(&["-static", &asm_path, "-o", &bin_path])
+        .args(&["-static", &asm_path_str, "-o", &bin_path_str])
         .stderr(Stdio::null())
         .status()
         .unwrap()
@@ -253,22 +330,12 @@ pub fn test_asmgen(path: &Path) {
         ::std::process::exit(SKIP_TEST);
     }
 
-    Command::new("rm")
-        .arg(asm_path)
-        .status()
-        .expect("failed to remove assembly code file");
-
     // Emulate the executable
     let mut child = Command::new("qemu-riscv64-static")
-        .args(&[&bin_path])
+        .args(&[&bin_path_str])
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to execute the compiled executable");
-
-    Command::new("rm")
-        .arg(bin_path)
-        .status()
-        .expect("failed to remove compiled executable");
 
     let status = some_or!(
         child
@@ -294,6 +361,8 @@ pub fn test_asmgen(path: &Path) {
     }
 
     let qemu_status = some_or_exit!(status.code(), SKIP_TEST);
+    drop(buffer);
+    temp_dir.close().expect("temp dir deletion failed");
 
     println!("kecc interp: {}, qemu: {}", value as u8, qemu_status as u8);
     assert_eq!(value as u8, qemu_status as u8);
